@@ -1,0 +1,31 @@
+{
+  "name": "@chat-agent/memory-system",
+  "version": "0.1.0",
+  "description": "Memory system package for episode/policy extraction and retrieval",
+  "type": "commonjs",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx tests/memoryReport.test.ts && tsx tests/usecases.test.ts && tsx tests/backgroundRunner.test.ts",
+    "test:integration": "tsx tests/postgres.integration.test.ts",
+    "start:background": "tsx src/cli/runBackground.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "drizzle-zod": "^0.8.3",
+    "pg": "^8.16.3",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}
