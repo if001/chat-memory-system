@@ -13,13 +13,17 @@ export class OllamaClient {
   constructor(
     private readonly baseUrl: string,
     private readonly model: string,
+    private readonly apiKey?: string,
     private readonly fetchFn: typeof fetch = fetch,
   ) {}
 
   async generateJson<T>(systemPrompt: string, userPrompt: string): Promise<T> {
     const response = await this.fetchFn(`${this.baseUrl}/api/chat`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}),
+      },
       body: JSON.stringify({
         model: this.model,
         messages: [

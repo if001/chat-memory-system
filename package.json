@@ -12,7 +12,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "tsx tests/memoryReport.test.ts && tsx tests/usecases.test.ts && tsx tests/backgroundRunner.test.ts",
     "test:integration": "tsx tests/postgres.integration.test.ts",
-    "start:background": "tsx src/cli/runBackground.ts",
+    "start:background": "tsx --env-file=.env.ao src/cli/runBackground.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },

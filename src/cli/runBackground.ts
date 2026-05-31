@@ -31,9 +31,13 @@ const main = async (): Promise<void> => {
     postgresUrl: required("POSTGRES_URL"),
     ollamaBaseUrl: required("OLLAMA_BASE_URL"),
     ollamaModel: required("OLLAMA_CHAT_MODEL"),
+    ollamaAPIKey: required("OLLAMA_API_KEY"),
     chunkSizeTurns: optionalNumber("MEMORY_CHUNK_SIZE_TURNS", 6),
     chunkOverlapTurns: optionalNumber("MEMORY_CHUNK_OVERLAP_TURNS", 2),
-    policyQueryHistoryTurns: optionalNumber("MEMORY_POLICY_QUERY_HISTORY_TURNS", 4),
+    policyQueryHistoryTurns: optionalNumber(
+      "MEMORY_POLICY_QUERY_HISTORY_TURNS",
+      4,
+    ),
   });
 
   const runner = createMemoryBackgroundRunner(service, {
