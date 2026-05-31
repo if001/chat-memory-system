@@ -1,8 +1,6 @@
 /.agent-shell/
 .env
-.env.ao
-.env.aka
-.env.db_migration
+.env.*
 lib/
 docs/
 node_modules/
