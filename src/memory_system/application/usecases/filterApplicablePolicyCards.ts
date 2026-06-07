@@ -1,12 +1,12 @@
 import { PolicyCard } from "../../domain/types";
-import { OllamaClient } from "../../infrastructure/ollama/client";
+import { JsonGeneratingClient } from "../../infrastructure/ollama/fileCachedClient";
 
 interface ApplicableResult {
   applicableIds: string[];
 }
 
 export const filterApplicablePolicyCards = async (
-  llm: OllamaClient,
+  llm: JsonGeneratingClient,
   currentContext: string,
   cards: PolicyCard[],
 ): Promise<PolicyCard[]> => {
@@ -14,9 +14,9 @@ export const filterApplicablePolicyCards = async (
     return [];
   }
   const systemPrompt = [
-    "You are a policy applicability classifier.",
-    "Pick policy card IDs applicable to the current context.",
-    "Return JSON only.",
+    "あなたは policy applicability classifier です。",
+    "現在の文脈に適用できる policy card ID を選んでください。",
+    "JSON のみを返してください。",
   ].join(" ");
   const userPrompt = JSON.stringify({
     currentContext,

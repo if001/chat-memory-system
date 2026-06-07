@@ -1,6 +1,6 @@
 import { ConversationChunk, EpisodeCase, TurnRecord } from "../../domain/types";
 import { buildEpisodeId, ensureTurnRecordId } from "../../domain/identifiers";
-import { OllamaClient } from "../../infrastructure/ollama/client";
+import { JsonGeneratingClient } from "../../infrastructure/ollama/fileCachedClient";
 
 interface ExtractEpisodeResult {
   stateLabel: string;
@@ -14,7 +14,7 @@ interface ExtractEpisodeResult {
 }
 
 export const extractEpisodeCase = async (
-  llm: OllamaClient,
+  llm: JsonGeneratingClient,
   record: TurnRecord,
 ): Promise<EpisodeCase> => {
   const normalizedRecord = ensureTurnRecordId(record);
@@ -34,7 +34,7 @@ export const extractEpisodeCase = async (
 };
 
 export const extractEpisodeCaseFromChunk = async (
-  llm: OllamaClient,
+  llm: JsonGeneratingClient,
   chunk: ConversationChunk,
 ): Promise<EpisodeCase> => {
   return extractEpisodeCaseFromConversationSource(
@@ -57,22 +57,23 @@ export const extractEpisodeCaseFromChunk = async (
 };
 
 const extractEpisodeCaseFromConversationSource = async (
-  llm: OllamaClient,
+  llm: JsonGeneratingClient,
   identity: Pick<EpisodeCase, "botId" | "threadId" | "id"> & {
     sourceChunkId?: string;
   },
   conversation: TurnRecord | Record<string, unknown>,
 ): Promise<EpisodeCase> => {
   const systemPrompt = [
-    "You are an episode extractor for conversation memory.",
-    "Extract one compact state-action-outcome case from the conversation.",
-    "Return JSON only.",
+    "あなたは conversation memory 用の episode extractor です。",
+    "会話から、コンパクトな state-action-outcome case を 1 つ抽出してください。",
+    "JSON のみを返してください。",
   ].join(" ");
   const userPrompt = JSON.stringify({
     instruction:
-      "Extract stateLabel, stateDescription, actionLabel, actionDescription, outcome, outcomeAssessment, feedbackSignals, policyUpdateNote.",
+      "stateLabel, stateDescription, actionLabel, actionDescription, outcome, outcomeAssessment(overall, score, naturalLanguageJudgement, updateHint), feedbackSignals, policyUpdateNote を抽出してください。",
     conversation,
   });
+
   const parsed = await llm.generateJson<ExtractEpisodeResult>(
     systemPrompt,
     userPrompt,
@@ -81,13 +82,21 @@ const extractEpisodeCaseFromConversationSource = async (
     id: identity.id,
     botId: identity.botId,
     threadId: identity.threadId,
-    ...(identity.sourceChunkId ? { sourceChunkId: identity.sourceChunkId } : {}),
+    ...(identity.sourceChunkId
+      ? { sourceChunkId: identity.sourceChunkId }
+      : {}),
     stateLabel: requireText(parsed.stateLabel, "stateLabel"),
     stateDescription: requireText(parsed.stateDescription, "stateDescription"),
     actionLabel: requireText(parsed.actionLabel, "actionLabel"),
-    actionDescription: requireText(parsed.actionDescription, "actionDescription"),
+    actionDescription: requireText(
+      parsed.actionDescription,
+      "actionDescription",
+    ),
     outcome: requireText(parsed.outcome, "outcome"),
-    outcomeAssessment: normalizeOutcomeAssessment(parsed.outcomeAssessment),
+    outcomeAssessment: normalizeOutcomeAssessment(
+      parsed.outcomeAssessment,
+      parsed.outcome,
+    ),
     feedbackSignals: normalizeFeedbackSignals(parsed.feedbackSignals),
     policyUpdateNote: requireText(parsed.policyUpdateNote, "policyUpdateNote"),
     createdAtIso: new Date().toISOString(),
@@ -115,21 +124,17 @@ const FEEDBACK_TYPES = new Set<EpisodeCase["feedbackSignals"][number]["type"]>([
   "continuation",
 ]);
 
-const FEEDBACK_STRENGTHS = new Set<EpisodeCase["feedbackSignals"][number]["strength"]>([
-  "low",
-  "medium",
-  "high",
-]);
+const FEEDBACK_STRENGTHS = new Set<
+  EpisodeCase["feedbackSignals"][number]["strength"]
+>(["low", "medium", "high"]);
 
-const FEEDBACK_TARGETS = new Set<EpisodeCase["feedbackSignals"][number]["target"]>([
-  "state",
-  "action",
-  "policy",
-  "distinction",
-  "unknown",
-]);
+const FEEDBACK_TARGETS = new Set<
+  EpisodeCase["feedbackSignals"][number]["target"]
+>(["state", "action", "policy", "distinction", "unknown"]);
 
-const UPDATE_HINTS = new Set<EpisodeCase["feedbackSignals"][number]["updateHint"]>([
+const UPDATE_HINTS = new Set<
+  EpisodeCase["feedbackSignals"][number]["updateHint"]
+>([
   "strengthen",
   "weaken",
   "split",
@@ -147,11 +152,7 @@ const OUTCOME_OVERALLS = new Set<EpisodeCase["outcomeAssessment"]["overall"]>([
 ]);
 
 const OUTCOME_SCORES = new Set<EpisodeCase["outcomeAssessment"]["score"]>([
-  -2,
-  -1,
-  0,
-  1,
-  2,
+  -2, -1, 0, 1, 2,
 ]);
 
 const normalizeFeedbackSignals = (
@@ -166,9 +167,13 @@ const normalizeFeedbackSignals = (
       {
         type: FEEDBACK_TYPES.has(signal.type) ? signal.type : "correction",
         text,
-        strength: FEEDBACK_STRENGTHS.has(signal.strength) ? signal.strength : "medium",
+        strength: FEEDBACK_STRENGTHS.has(signal.strength)
+          ? signal.strength
+          : "medium",
         target: FEEDBACK_TARGETS.has(signal.target) ? signal.target : "unknown",
-        updateHint: UPDATE_HINTS.has(signal.updateHint) ? signal.updateHint : "no_change",
+        updateHint: UPDATE_HINTS.has(signal.updateHint)
+          ? signal.updateHint
+          : "no_change",
       },
     ];
   });
@@ -176,10 +181,14 @@ const normalizeFeedbackSignals = (
 
 const normalizeOutcomeAssessment = (
   value: EpisodeCase["outcomeAssessment"] | undefined,
+  fallbackOutcome: string | undefined,
 ): EpisodeCase["outcomeAssessment"] => {
-  const naturalLanguageJudgement = value?.naturalLanguageJudgement?.trim();
+  const naturalLanguageJudgement =
+    value?.naturalLanguageJudgement?.trim() || fallbackOutcome?.trim();
   if (!naturalLanguageJudgement) {
-    throw new Error("extractEpisodeCase returned empty outcomeAssessment.naturalLanguageJudgement");
+    throw new Error(
+      "extractEpisodeCase returned empty outcomeAssessment.naturalLanguageJudgement and outcome",
+    );
   }
   return {
     overall:

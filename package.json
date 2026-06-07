@@ -10,8 +10,9 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "tsx tests/memoryReport.test.ts && tsx tests/usecases.test.ts && tsx tests/backgroundRunner.test.ts",
-    "test:integration": "tsx tests/postgres.integration.test.ts",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "vitest run tests/postgres.integration.test.ts",
     "start:background": "tsx --env-file=.env.ao src/cli/runBackground.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
@@ -26,6 +27,7 @@
     "@types/node": "^25.6.0",
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^3.2.6"
   }
 }

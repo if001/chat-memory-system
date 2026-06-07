@@ -1,5 +1,5 @@
 import { EpisodeCase, PolicyCard } from "../../domain/types";
-import { OllamaClient } from "../../infrastructure/ollama/client";
+import { JsonGeneratingClient } from "../../infrastructure/ollama/fileCachedClient";
 
 interface BuildPolicyResult {
   title: string;
@@ -11,7 +11,7 @@ interface BuildPolicyResult {
 }
 
 export const buildPolicyCardFromEpisodes = async (
-  llm: OllamaClient,
+  llm: JsonGeneratingClient,
   botId: string,
   episodes: EpisodeCase[],
 ): Promise<PolicyCard | null> => {
@@ -22,13 +22,13 @@ export const buildPolicyCardFromEpisodes = async (
     return null;
   }
   const systemPrompt = [
-    "You are a policy card builder.",
-    "Synthesize one practical policy card from episode cases.",
-    "Return JSON only.",
+    "あなたは policy card builder です。",
+    "episode case 群から、実用的な policy card を 1 つ統合してください。",
+    "JSON のみを返してください。",
   ].join(" ");
   const userPrompt = JSON.stringify({
     instruction:
-      "Create title, appliesWhen, recommendedBehavior, avoidBehavior, distinctionNotes, confidence.",
+      "title, appliesWhen, recommendedBehavior, avoidBehavior, distinctionNotes, confidence を作成してください。",
     episodes,
   });
   const parsed = await llm.generateJson<BuildPolicyResult>(systemPrompt, userPrompt);

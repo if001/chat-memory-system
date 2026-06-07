@@ -141,3 +141,13 @@ export interface MemoryReport {
   conflicts: string[];
   createdAtIso: string;
 }
+
+export interface RelationshipInsightReport {
+  botId: string;
+  threadId: string;
+  clarificationCandidates: string[];
+  proactiveContextCandidates: string[];
+  repairCandidates: string[];
+  boundaryCandidates: string[];
+  createdAtIso: string;
+}

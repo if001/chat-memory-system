@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import { buildPolicyCardFromEpisodes } from "../src/memory_system/application/usecases/buildPolicyCard";
 import {
   buildConversationChunks,
@@ -14,6 +15,7 @@ import {
 import { filterApplicablePolicyCards } from "../src/memory_system/application/usecases/filterApplicablePolicyCards";
 import { mergePolicyCardUpdate } from "../src/memory_system/application/usecases/mergePolicyCardUpdate";
 import { transitionPolicySplitCandidate } from "../src/memory_system/application/usecases/transitionPolicySplitCandidate";
+import { OllamaClient } from "../src/memory_system/infrastructure/ollama/client";
 import {
   ConversationChunk,
   EpisodeCase,
@@ -112,36 +114,6 @@ const conversationChunk = (
   createdAtIso: "2026-05-26T00:02:00.000Z",
   ...overrides,
 });
-
-const run = async (): Promise<void> => {
-  await testNormalizeChunkingConfigDefaults();
-  await testNormalizeChunkingConfigRejectsInvalidOverlap();
-  await testBuildConversationChunksUsesSlidingWindowOverlap();
-  await testBuildConversationChunksKeepsLatestTurnsWhenInputTrimmed();
-  await testBuildConversationChunksGeneratesStableTurnIdsWhenMissing();
-  await testBuildPolicyQueryContextIncludesRecentTurns();
-  await testBuildPolicyQueryContextReturnsCurrentContextWithoutHistory();
-  await testBuildPolicyQueryContextReturnsHistoryWithoutCurrentContext();
-  await testBuildPolicyQueryContextRespectsTokenBudget();
-  await testExtractEpisodeCaseNormalizesFeedbackSignals();
-  await testExtractEpisodeCaseRejectsMissingRequiredField();
-  await testExtractEpisodeCaseNormalizesOutcomeAssessment();
-  await testExtractEpisodeCaseFromChunkUsesChunkIdentity();
-  await testBuildPolicyCardSkipsMergeOnStrongSplitSignal();
-  await testBuildPolicyCardNormalizesConfidence();
-  await testBuildPolicyCardUsesDeterministicIdForSameEpisode();
-  await testDecidePolicyCardUpdateReturnsCreateNewWithoutExistingCards();
-  await testDecidePolicyCardUpdateUsesOutcomeAssessmentCreateNew();
-  await testDecidePolicyCardUpdateUsesNegativeOutcomeAsSplitSignal();
-  await testDecidePolicyCardUpdateTargetsSingleExistingCardOnStrongSplit();
-  await testDecidePolicyCardUpdateRejectsUnknownMergeTarget();
-  await testFilterApplicablePolicyCardsIgnoresUnknownIds();
-  await testMergePolicyCardUpdateAppendsEvidenceAndDistinctionNotes();
-  await testMergePolicyCardUpdateAdjustsConfidenceFromEpisodeOutcome();
-  await testApplyResolvedSplitCandidateUpdatesTargetPolicyCard();
-  await testTransitionPolicySplitCandidateResolvesOpenCandidate();
-  await testTransitionPolicySplitCandidateRejectsClosedCandidate();
-};
 
 const testNormalizeChunkingConfigDefaults = async (): Promise<void> => {
   assert.deepEqual(normalizeChunkingConfig(undefined), {
@@ -448,6 +420,29 @@ const testExtractEpisodeCaseFromChunkUsesChunkIdentity = async (): Promise<void>
   assert.equal(result.sourceChunkId, "chunk-1");
 };
 
+const testExtractEpisodeCaseFallsBackToOutcomeWhenJudgementMissing = async (): Promise<void> => {
+  const llm = new OllamaClientStub({
+    stateLabel: "ops chunk",
+    stateDescription: "Chunk-level context",
+    actionLabel: "respond",
+    actionDescription: "Respond based on chunk",
+    outcome: "Resolved with user confirmation.",
+    outcomeAssessment: {
+      overall: "positive",
+      score: 1,
+      updateHint: "strengthen",
+    },
+    feedbackSignals: [],
+    policyUpdateNote: "keep current policy",
+  });
+
+  const result = await extractEpisodeCase(llm as never, turnRecord);
+  assert.equal(
+    result.outcomeAssessment.naturalLanguageJudgement,
+    "Resolved with user confirmation.",
+  );
+};
+
 const testBuildPolicyCardSkipsMergeOnStrongSplitSignal = async (): Promise<void> => {
   const llm = new OllamaClientStub({
     title: "should not be used",
@@ -656,6 +651,56 @@ const testFilterApplicablePolicyCardsIgnoresUnknownIds = async (): Promise<void>
   );
 };
 
+const testOllamaClientParsesFencedJson = async (): Promise<void> => {
+  const client = new OllamaClient(
+    "http://ollama.local",
+    "qwen3",
+    undefined,
+    async () =>
+      new Response(
+        JSON.stringify({
+          message: {
+            content: '```json\n{"applicableIds":["pc-1"]}\n```',
+          },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+  );
+
+  const result = await client.generateJson<{ applicableIds: string[] }>(
+    "system",
+    "user",
+  );
+  assert.deepEqual(result, { applicableIds: ["pc-1"] });
+};
+
+const testOllamaClientParsesJsonWithLeadingNoise = async (): Promise<void> => {
+  const client = new OllamaClient(
+    "http://ollama.local",
+    "qwen3",
+    undefined,
+    async () =>
+      new Response(
+        JSON.stringify({
+          message: {
+            content:
+              'Here is the result.\n```json\n["pc-1","pc-2"]\n```\nUse it carefully.',
+          },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+  );
+
+  const result = await client.generateJson<string[]>("system", "user");
+  assert.deepEqual(result, ["pc-1", "pc-2"]);
+};
+
 const testMergePolicyCardUpdateAppendsEvidenceAndDistinctionNotes = async (): Promise<void> => {
   const result = mergePolicyCardUpdate(
     policyCard({
@@ -795,4 +840,120 @@ const testTransitionPolicySplitCandidateRejectsClosedCandidate = async (): Promi
   );
 };
 
-void run();
+test("normalizeChunkingConfig defaults", testNormalizeChunkingConfigDefaults);
+test(
+  "normalizeChunkingConfig rejects invalid overlap",
+  testNormalizeChunkingConfigRejectsInvalidOverlap,
+);
+test(
+  "buildConversationChunks uses sliding window overlap",
+  testBuildConversationChunksUsesSlidingWindowOverlap,
+);
+test(
+  "buildConversationChunks keeps latest turns when input trimmed",
+  testBuildConversationChunksKeepsLatestTurnsWhenInputTrimmed,
+);
+test(
+  "buildConversationChunks generates stable turn ids when missing",
+  testBuildConversationChunksGeneratesStableTurnIdsWhenMissing,
+);
+test(
+  "buildPolicyQueryContext includes recent turns",
+  testBuildPolicyQueryContextIncludesRecentTurns,
+);
+test(
+  "buildPolicyQueryContext returns current context without history",
+  testBuildPolicyQueryContextReturnsCurrentContextWithoutHistory,
+);
+test(
+  "buildPolicyQueryContext returns history without current context",
+  testBuildPolicyQueryContextReturnsHistoryWithoutCurrentContext,
+);
+test(
+  "buildPolicyQueryContext respects token budget",
+  testBuildPolicyQueryContextRespectsTokenBudget,
+);
+test(
+  "extractEpisodeCase normalizes feedback signals",
+  testExtractEpisodeCaseNormalizesFeedbackSignals,
+);
+test(
+  "extractEpisodeCase rejects missing required field",
+  testExtractEpisodeCaseRejectsMissingRequiredField,
+);
+test(
+  "extractEpisodeCase normalizes outcome assessment",
+  testExtractEpisodeCaseNormalizesOutcomeAssessment,
+);
+test(
+  "extractEpisodeCaseFromChunk uses chunk identity",
+  testExtractEpisodeCaseFromChunkUsesChunkIdentity,
+);
+test(
+  "extractEpisodeCase falls back to outcome when judgement missing",
+  testExtractEpisodeCaseFallsBackToOutcomeWhenJudgementMissing,
+);
+test(
+  "buildPolicyCard skips merge on strong split signal",
+  testBuildPolicyCardSkipsMergeOnStrongSplitSignal,
+);
+test(
+  "buildPolicyCard normalizes confidence",
+  testBuildPolicyCardNormalizesConfidence,
+);
+test(
+  "buildPolicyCard uses deterministic id for same episode",
+  testBuildPolicyCardUsesDeterministicIdForSameEpisode,
+);
+test(
+  "decidePolicyCardUpdate returns create new without existing cards",
+  testDecidePolicyCardUpdateReturnsCreateNewWithoutExistingCards,
+);
+test(
+  "decidePolicyCardUpdate uses outcome assessment create new",
+  testDecidePolicyCardUpdateUsesOutcomeAssessmentCreateNew,
+);
+test(
+  "decidePolicyCardUpdate uses negative outcome as split signal",
+  testDecidePolicyCardUpdateUsesNegativeOutcomeAsSplitSignal,
+);
+test(
+  "decidePolicyCardUpdate targets single existing card on strong split",
+  testDecidePolicyCardUpdateTargetsSingleExistingCardOnStrongSplit,
+);
+test(
+  "decidePolicyCardUpdate rejects unknown merge target",
+  testDecidePolicyCardUpdateRejectsUnknownMergeTarget,
+);
+test(
+  "filterApplicablePolicyCards ignores unknown ids",
+  testFilterApplicablePolicyCardsIgnoresUnknownIds,
+);
+test(
+  "OllamaClient parses fenced json",
+  testOllamaClientParsesFencedJson,
+);
+test(
+  "OllamaClient parses json with leading noise",
+  testOllamaClientParsesJsonWithLeadingNoise,
+);
+test(
+  "mergePolicyCardUpdate appends evidence and distinction notes",
+  testMergePolicyCardUpdateAppendsEvidenceAndDistinctionNotes,
+);
+test(
+  "mergePolicyCardUpdate adjusts confidence from episode outcome",
+  testMergePolicyCardUpdateAdjustsConfidenceFromEpisodeOutcome,
+);
+test(
+  "applyResolvedSplitCandidate updates target policy card",
+  testApplyResolvedSplitCandidateUpdatesTargetPolicyCard,
+);
+test(
+  "transitionPolicySplitCandidate resolves open candidate",
+  testTransitionPolicySplitCandidateResolvesOpenCandidate,
+);
+test(
+  "transitionPolicySplitCandidate rejects closed candidate",
+  testTransitionPolicySplitCandidateRejectsClosedCandidate,
+);

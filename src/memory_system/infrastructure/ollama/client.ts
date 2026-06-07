@@ -39,6 +39,43 @@ export class OllamaClient {
     }
     const data = (await response.json()) as OllamaChatResponse;
     const raw = data.message?.content ?? "{}";
-    return JSON.parse(raw) as T;
+    return parseJsonResponse<T>(raw);
   }
 }
+
+const parseJsonResponse = <T>(raw: string): T => {
+  const normalized = unwrapJsonFence(raw.trim());
+  try {
+    return JSON.parse(normalized) as T;
+  } catch {
+    const extracted = extractJsonCandidate(normalized);
+    return JSON.parse(extracted) as T;
+  }
+};
+
+const unwrapJsonFence = (value: string): string => {
+  const fenced = value.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced?.[1]) {
+    return fenced[1].trim();
+  }
+  return value;
+};
+
+const extractJsonCandidate = (value: string): string => {
+  const objectStart = value.indexOf("{");
+  const arrayStart = value.indexOf("[");
+  const startCandidates = [objectStart, arrayStart].filter(
+    (index) => index >= 0,
+  );
+  if (startCandidates.length === 0) {
+    return value;
+  }
+  const start = Math.min(...startCandidates);
+  const objectEnd = value.lastIndexOf("}");
+  const arrayEnd = value.lastIndexOf("]");
+  const end = Math.max(objectEnd, arrayEnd);
+  if (end < start) {
+    return value.slice(start);
+  }
+  return value.slice(start, end + 1).trim();
+};

@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import { createMemoryBackgroundRunner } from "../src/memory_system/api/backgroundRunner";
-
-const run = async (): Promise<void> => {
-  await testBackgroundRunnerProcessesThreadsThenEpisodesThenPolicies();
-};
 
 const testBackgroundRunnerProcessesThreadsThenEpisodesThenPolicies = async (): Promise<void> => {
   const calls: string[] = [];
@@ -47,4 +44,7 @@ const testBackgroundRunnerProcessesThreadsThenEpisodesThenPolicies = async (): P
   ]);
 };
 
-void run();
+test(
+  "background runner processes threads then episodes then policies",
+  testBackgroundRunnerProcessesThreadsThenEpisodesThenPolicies,
+);

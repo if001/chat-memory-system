@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import { buildMemoryReportSignals } from "../src/memory_system/api/service";
 import { PolicyCard } from "../src/memory_system/domain/types";
 
@@ -31,16 +32,20 @@ const cards: PolicyCard[] = [
   },
 ];
 
-const report = buildMemoryReportSignals(cards, now);
-assert.ok(report.gaps.includes("No high-confidence policy card exists"));
-assert.ok(report.staleNotes.some((note) => note.includes("p1")));
-assert.ok(
-  report.conflicts.some((note) =>
-    note
-      .toLowerCase()
-      .includes("conflicting recommended behavior detected for title: design request"),
-  ),
-);
+test("buildMemoryReportSignals detects gaps stale notes and conflicts", () => {
+  const report = buildMemoryReportSignals(cards, now);
+  assert.ok(report.gaps.includes("No high-confidence policy card exists"));
+  assert.ok(report.staleNotes.some((note) => note.includes("p1")));
+  assert.ok(
+    report.conflicts.some((note) =>
+      note
+        .toLowerCase()
+        .includes("conflicting recommended behavior detected for title: design request"),
+    ),
+  );
+});
 
-const empty = buildMemoryReportSignals([], now);
-assert.ok(empty.gaps.includes("No policy cards exist yet for this bot"));
+test("buildMemoryReportSignals reports missing cards", () => {
+  const empty = buildMemoryReportSignals([], now);
+  assert.ok(empty.gaps.includes("No policy cards exist yet for this bot"));
+});

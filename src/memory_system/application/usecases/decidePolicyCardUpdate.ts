@@ -1,5 +1,5 @@
 import { EpisodeCase, PolicyCard, PolicyUpdateDecision } from "../../domain/types";
-import { OllamaClient } from "../../infrastructure/ollama/client";
+import { JsonGeneratingClient } from "../../infrastructure/ollama/fileCachedClient";
 
 interface DecidePolicyUpdateResult {
   decision: PolicyUpdateDecision["decision"];
@@ -16,7 +16,7 @@ interface DecidePolicyUpdateResult {
 }
 
 export const decidePolicyCardUpdate = async (
-  llm: OllamaClient,
+  llm: JsonGeneratingClient,
   episode: EpisodeCase,
   existingCards: PolicyCard[],
 ): Promise<PolicyUpdateDecision> => {
@@ -63,19 +63,19 @@ export const decidePolicyCardUpdate = async (
   }
 
   const systemPrompt = [
-    "You decide how to update conversation memory policy cards.",
-    "Given one new episode and existing policy cards, decide whether to merge into one card, create a new card, split an existing card, or stay uncertain.",
-    "Be conservative about merge decisions.",
-    "Return JSON only.",
+    "あなたは conversation memory policy card の更新方法を判断します。",
+    "1 つの新しい episode と既存の policy card 群を見て、1 枚に merge するか、新規作成するか、既存 card を split するか、あるいは uncertain のままにするかを判断してください。",
+    "merge の判断は保守的に行ってください。",
+    "JSON のみを返してください。",
   ].join(" ");
   const userPrompt = JSON.stringify({
     instruction: [
-      "Check whether appliesWhen really matches.",
-      "Check whether recommendedBehavior can stay the same.",
-      "Check whether avoidBehavior conflicts.",
-      "Check whether distinctionNotes say this case should stay separate.",
-      "If the episode includes a user distinction request, avoid merge.",
-      "Return decision, reason, optional targetPolicyCardId, optional updatedPolicyCard.",
+      "appliesWhen が本当に一致しているか確認してください。",
+      "recommendedBehavior を維持できるか確認してください。",
+      "avoidBehavior に衝突がないか確認してください。",
+      "distinctionNotes が、このケースを分けて保持すべきだと示していないか確認してください。",
+      "episode に user の distinction request が含まれる場合は merge を避けてください。",
+      "decision, reason, optional targetPolicyCardId, optional updatedPolicyCard を返してください。",
     ].join(" "),
     episode,
     existingPolicyCards: existingCards,

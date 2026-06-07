@@ -1,0 +1,89 @@
+import assert from "node:assert/strict";
+import { test } from "vitest";
+import { buildMemoryBackgroundRunnerFromEnv } from "../src/cli/runBackground";
+
+test("buildMemoryBackgroundRunnerFromEnv wires service and runner config", () => {
+  let serviceInput: unknown;
+  let runnerInput: unknown;
+  const built = buildMemoryBackgroundRunnerFromEnv(
+    {
+      BOT_ID: "ao",
+      POSTGRES_URL: "postgres://example",
+      OLLAMA_BASE_URL: "http://ollama.local",
+      OLLAMA_CHAT_MODEL: "qwen3",
+      OLLAMA_API_KEY: "secret",
+      MEMORY_BACKGROUND_POLL_MS: "7000",
+      MEMORY_BACKGROUND_THREAD_LIMIT: "12",
+      MEMORY_BACKGROUND_TURN_LIMIT_PER_THREAD: "90",
+      MEMORY_BACKGROUND_EPISODE_LIMIT: "11",
+      MEMORY_BACKGROUND_POLICY_LIMIT: "8",
+      MEMORY_LLM_CACHE_DIR: "/tmp/memory-cache",
+      MEMORY_LLM_CACHE_TTL_MS: "60000",
+      MEMORY_CHUNK_SIZE_TURNS: "5",
+      MEMORY_CHUNK_OVERLAP_TURNS: "1",
+      MEMORY_POLICY_QUERY_HISTORY_TURNS: "6",
+    },
+    {
+      createMemorySystemService: ((input) => {
+        serviceInput = input;
+        return {} as never;
+      }) as never,
+      createMemoryBackgroundRunner: ((service, config) => {
+        runnerInput = { service, config };
+        return { start() {}, stop() {}, runOnce: async () => {} } as never;
+      }) as never,
+    },
+  );
+
+  assert.equal(built.meta.pollMs, 7000);
+  assert.deepEqual(serviceInput, {
+    postgresUrl: "postgres://example",
+    ollamaBaseUrl: "http://ollama.local",
+    ollamaModel: "qwen3",
+    ollamaAPIKey: "secret",
+    llmCacheDir: "/tmp/memory-cache",
+    llmCacheTtlMs: 60000,
+    chunkSizeTurns: 5,
+    chunkOverlapTurns: 1,
+    policyQueryHistoryTurns: 6,
+  });
+  assert.deepEqual(runnerInput, {
+    service: {} as never,
+    config: {
+      botId: "ao",
+      pollMs: 7000,
+      threadLimit: 12,
+      turnLimitPerThread: 90,
+      episodeLimit: 11,
+      policyLimit: 8,
+    },
+  });
+});
+
+test("buildMemoryBackgroundRunnerFromEnv throws on missing required env", () => {
+  assert.throws(
+    () =>
+      buildMemoryBackgroundRunnerFromEnv({
+        BOT_ID: "ao",
+        POSTGRES_URL: "postgres://example",
+        OLLAMA_BASE_URL: "http://ollama.local",
+        OLLAMA_API_KEY: "secret",
+      }),
+    /Missing environment variable: OLLAMA_CHAT_MODEL/,
+  );
+});
+
+test("buildMemoryBackgroundRunnerFromEnv throws on invalid numeric env", () => {
+  assert.throws(
+    () =>
+      buildMemoryBackgroundRunnerFromEnv({
+        BOT_ID: "ao",
+        POSTGRES_URL: "postgres://example",
+        OLLAMA_BASE_URL: "http://ollama.local",
+        OLLAMA_CHAT_MODEL: "qwen3",
+        OLLAMA_API_KEY: "secret",
+        MEMORY_BACKGROUND_POLL_MS: "abc",
+      }),
+    /Invalid numeric environment variable: MEMORY_BACKGROUND_POLL_MS/,
+  );
+});
