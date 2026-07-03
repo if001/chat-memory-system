@@ -119,14 +119,13 @@ test("buildOrUpdatePolicyCards merges existing card and marks episode processed"
         decision: "merge",
         reason: "The same concrete implementation behavior still applies.",
         targetPolicyCardId: "pc-1",
-        updatedPolicyCard: {
-          title: "Implementation decision support",
-          appliesWhen: "User wants a concrete implementation choice.",
-          recommendedBehavior: "Answer concretely and compare tradeoffs briefly.",
-          avoidBehavior: "Do not stay abstract.",
-          distinctionNotes: "Different from research framing questions.",
-          confidence: "medium",
-        },
+      },
+      {
+        title: "Implementation decision support",
+        appliesWhen: "User wants a concrete implementation choice.",
+        recommendedBehavior: "Answer concretely and compare tradeoffs briefly.",
+        avoidBehavior: "Do not stay abstract.",
+        distinctionNotes: "Different from research framing questions.",
       },
     ],
     fetchPendingEpisodes: async () => [episode],
@@ -149,7 +148,7 @@ test("buildOrUpdatePolicyCards merges existing card and marks episode processed"
 
 test("queryApplicablePolicyCards filters llm-selected candidate ids", async () => {
   const service = createStubbedService({
-    generateJsonQueue: [{ applicableIds: ["pc-2"] }],
+    generateJsonQueue: [["pc-2"]],
     fetchRecentTurnRecordsForThread: async () => [
       buildTurnRecord("ao", "thread-1", "need implementation help", "ok"),
     ],

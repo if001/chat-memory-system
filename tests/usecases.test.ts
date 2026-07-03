@@ -6,6 +6,7 @@ import {
   normalizeChunkingConfig,
 } from "../src/memory_system/application/usecases/buildConversationChunks";
 import { applyResolvedSplitCandidate } from "../src/memory_system/application/usecases/applyResolvedSplitCandidate";
+import { buildMergedPolicyCard } from "../src/memory_system/application/usecases/buildMergedPolicyCard";
 import { buildPolicyQueryContext } from "../src/memory_system/application/usecases/buildPolicyQueryContext";
 import { decidePolicyCardUpdate } from "../src/memory_system/application/usecases/decidePolicyCardUpdate";
 import {
@@ -612,14 +613,6 @@ const testDecidePolicyCardUpdateRejectsUnknownMergeTarget = async (): Promise<vo
     decision: "merge",
     reason: "Looks similar to an existing card.",
     targetPolicyCardId: "pc-missing",
-    updatedPolicyCard: {
-      title: "Merged card",
-      appliesWhen: "When the user asks for concrete implementation help.",
-      recommendedBehavior: "Answer concretely.",
-      avoidBehavior: "Avoid abstraction.",
-      distinctionNotes: "Separate from research mode.",
-      confidence: "high",
-    },
   });
 
   const result = await decidePolicyCardUpdate(llm as never, episode(), [
@@ -628,13 +621,34 @@ const testDecidePolicyCardUpdateRejectsUnknownMergeTarget = async (): Promise<vo
 
   assert.equal(result.decision, "merge");
   assert.equal(result.targetPolicyCardId, undefined);
-  assert.equal(result.updatedPolicyCard, undefined);
+};
+
+const testBuildMergedPolicyCardRewritesCardBody = async (): Promise<void> => {
+  const llm = new OllamaClientStub({
+    title: "Merged card",
+    appliesWhen: "When the user asks for concrete implementation help.",
+    recommendedBehavior: "Answer concretely.",
+    avoidBehavior: "Avoid abstraction.",
+    distinctionNotes: "Separate from research mode.",
+  });
+
+  const result = await buildMergedPolicyCard(
+    llm as never,
+    policyCard(),
+    episode(),
+  );
+
+  assert.deepEqual(result, {
+    title: "Merged card",
+    appliesWhen: "When the user asks for concrete implementation help.",
+    recommendedBehavior: "Answer concretely.",
+    avoidBehavior: "Avoid abstraction.",
+    distinctionNotes: "Separate from research mode.",
+  });
 };
 
 const testFilterApplicablePolicyCardsIgnoresUnknownIds = async (): Promise<void> => {
-  const llm = new OllamaClientStub({
-    applicableIds: ["pc-1", "pc-missing"],
-  });
+  const llm = new OllamaClientStub(["pc-1", "pc-missing"]);
 
   const result = await filterApplicablePolicyCards(
     llm as never,
@@ -701,10 +715,9 @@ const testOllamaClientParsesJsonWithLeadingNoise = async (): Promise<void> => {
   assert.deepEqual(result, ["pc-1", "pc-2"]);
 };
 
-const testMergePolicyCardUpdateAppendsEvidenceAndDistinctionNotes = async (): Promise<void> => {
+const testMergePolicyCardUpdateUsesRewrittenCardBodyAndAppendsEvidence = async (): Promise<void> => {
   const result = mergePolicyCardUpdate(
     policyCard({
-      distinctionNotes: "Existing distinction note.",
       evidenceEpisodeIds: ["ep-1"],
       confidence: "medium",
     }),
@@ -714,26 +727,13 @@ const testMergePolicyCardUpdateAppendsEvidenceAndDistinctionNotes = async (): Pr
       recommendedBehavior: "Answer concretely.",
       avoidBehavior: "Avoid vague abstraction.",
       distinctionNotes: "Updated distinction note.",
-      confidence: "medium",
     },
-    episode({
-      id: "ep-2",
-      feedbackSignals: [
-        {
-          type: "distinction_request",
-          text: "Separate implementation from research framing.",
-          strength: "high",
-          target: "distinction",
-          updateHint: "split",
-        },
-      ],
-    }),
+    episode({ id: "ep-2" }),
   );
 
   assert.deepEqual(result.evidenceEpisodeIds, ["ep-1", "ep-2"]);
-  assert.match(result.distinctionNotes, /Existing distinction note\./);
   assert.match(result.distinctionNotes, /Updated distinction note\./);
-  assert.match(result.distinctionNotes, /Separate implementation from research framing\./);
+  assert.equal(result.avoidBehavior, "Avoid vague abstraction.");
 };
 
 const testMergePolicyCardUpdateAdjustsConfidenceFromEpisodeOutcome = async (): Promise<void> => {
@@ -745,7 +745,6 @@ const testMergePolicyCardUpdateAdjustsConfidenceFromEpisodeOutcome = async (): P
       recommendedBehavior: "Answer concretely.",
       avoidBehavior: "Avoid vague abstraction.",
       distinctionNotes: "",
-      confidence: "medium",
     },
     episode({
       id: "ep-2",
@@ -775,7 +774,6 @@ const testMergePolicyCardUpdateAdjustsConfidenceFromEpisodeOutcome = async (): P
       recommendedBehavior: "Answer concretely.",
       avoidBehavior: "Avoid vague abstraction.",
       distinctionNotes: "",
-      confidence: "medium",
     },
     episode({
       id: "ep-3",
@@ -922,6 +920,10 @@ test(
   testDecidePolicyCardUpdateTargetsSingleExistingCardOnStrongSplit,
 );
 test(
+  "buildMergedPolicyCard rewrites card body",
+  testBuildMergedPolicyCardRewritesCardBody,
+);
+test(
   "decidePolicyCardUpdate rejects unknown merge target",
   testDecidePolicyCardUpdateRejectsUnknownMergeTarget,
 );
@@ -938,8 +940,8 @@ test(
   testOllamaClientParsesJsonWithLeadingNoise,
 );
 test(
-  "mergePolicyCardUpdate appends evidence and distinction notes",
-  testMergePolicyCardUpdateAppendsEvidenceAndDistinctionNotes,
+  "mergePolicyCardUpdate uses rewritten card body and appends evidence",
+  testMergePolicyCardUpdateUsesRewrittenCardBodyAndAppendsEvidence,
 );
 test(
   "mergePolicyCardUpdate adjusts confidence from episode outcome",

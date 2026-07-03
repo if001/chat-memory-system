@@ -50,14 +50,13 @@ const testMergePolicyCardFlow = async (): Promise<void> => {
       decision: "merge",
       reason: "The same concrete implementation behavior still applies.",
       targetPolicyCardId: "pc-existing",
-      updatedPolicyCard: {
-        title: "Implementation decision support",
-        appliesWhen: "User wants a concrete implementation choice.",
-        recommendedBehavior: "Answer concretely and compare tradeoffs briefly.",
-        avoidBehavior: "Do not stay abstract.",
-        distinctionNotes: "Different from research framing questions.",
-        confidence: "medium",
-      },
+    },
+    {
+      title: "Implementation decision support",
+      appliesWhen: "User wants a concrete implementation choice.",
+      recommendedBehavior: "Answer concretely and compare tradeoffs briefly.",
+      avoidBehavior: "Do not stay abstract.",
+      distinctionNotes: "Different from research framing questions.",
     },
   ]);
   const repository = new MemoryRepository(postgresUrl as string);

@@ -1,10 +1,6 @@
 import { PolicyCard } from "../../domain/types";
 import { JsonGeneratingClient } from "../../infrastructure/ollama/fileCachedClient";
 
-interface ApplicableResult {
-  applicableIds: string[];
-}
-
 export const filterApplicablePolicyCards = async (
   llm: JsonGeneratingClient,
   currentContext: string,
@@ -16,8 +12,11 @@ export const filterApplicablePolicyCards = async (
   const systemPrompt = [
     "あなたは policy applicability classifier です。",
     "現在の文脈に適用できる policy card ID を選んでください。",
+    "返却形式は policy card ID の JSON string array のみです。",
     "JSON のみを返してください。",
   ].join(" ");
+
+  console.log("[filterApplicablePolicyCards]: cards", cards);
   const userPrompt = JSON.stringify({
     currentContext,
     policyCards: cards.map((c) => ({
@@ -29,7 +28,12 @@ export const filterApplicablePolicyCards = async (
       avoidBehavior: c.avoidBehavior,
     })),
   });
-  const parsed = await llm.generateJson<ApplicableResult>(systemPrompt, userPrompt);
-  const selected = new Set(parsed.applicableIds ?? []);
+  const parsed = await llm.generateJson<string[]>(
+    systemPrompt,
+    userPrompt,
+  );
+  console.log("[filterApplicablePolicyCards]:parsed", parsed);
+  const selected = new Set(parsed ?? []);
+  console.log("[filterApplicablePolicyCards]: selected", selected);
   return cards.filter((card) => selected.has(card.id));
 };

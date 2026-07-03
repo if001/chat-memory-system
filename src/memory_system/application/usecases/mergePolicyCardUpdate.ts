@@ -1,55 +1,38 @@
-import { EpisodeCase, PolicyCard, PolicyUpdateDecision } from "../../domain/types";
+import { EpisodeCase, PolicyCard } from "../../domain/types";
 
 export const mergePolicyCardUpdate = (
   existing: PolicyCard,
-  updated: NonNullable<PolicyUpdateDecision["updatedPolicyCard"]>,
+  merged: Pick<
+    PolicyCard,
+    | "title"
+    | "appliesWhen"
+    | "recommendedBehavior"
+    | "avoidBehavior"
+    | "distinctionNotes"
+  >,
   episode: EpisodeCase,
 ): PolicyCard => {
-  const distinctionNotes = mergeDistinctText([
-    existing.distinctionNotes,
-    updated.distinctionNotes,
-    buildEpisodeDistinctionNote(episode),
-  ]);
-
   return {
     id: existing.id,
     botId: existing.botId,
-    title: updated.title,
-    appliesWhen: updated.appliesWhen,
-    recommendedBehavior: updated.recommendedBehavior,
-    avoidBehavior: mergeDistinctText([existing.avoidBehavior, updated.avoidBehavior]),
-    distinctionNotes,
-    confidence: adjustConfidence(existing.confidence, updated.confidence, episode),
+    title: merged.title,
+    appliesWhen: merged.appliesWhen,
+    recommendedBehavior: merged.recommendedBehavior,
+    avoidBehavior: merged.avoidBehavior,
+    distinctionNotes: merged.distinctionNotes,
+    confidence: adjustConfidence(existing.confidence, episode),
     evidenceEpisodeIds: uniqueIds([...existing.evidenceEpisodeIds, episode.id]),
     lastUpdatedIso: new Date().toISOString(),
   };
-};
-
-const buildEpisodeDistinctionNote = (episode: EpisodeCase): string => {
-  const distinctionSignals = episode.feedbackSignals.filter(
-    (signal) => signal.type === "distinction_request" || signal.target === "distinction",
-  );
-  if (distinctionSignals.length === 0) {
-    return "";
-  }
-  return distinctionSignals.map((signal) => signal.text.trim()).join(" ");
-};
-
-const mergeDistinctText = (values: string[]): string => {
-  const normalized = values
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-  return [...new Set(normalized)].join("\n");
 };
 
 const uniqueIds = (values: string[]): string[] => [...new Set(values)];
 
 const adjustConfidence = (
   existing: PolicyCard["confidence"],
-  updated: PolicyCard["confidence"],
   episode: EpisodeCase,
 ): PolicyCard["confidence"] => {
-  let score = Math.max(toScore(existing), toScore(updated));
+  let score = toScore(existing);
 
   if (
     episode.outcomeAssessment.overall === "positive" &&

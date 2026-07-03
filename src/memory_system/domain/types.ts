@@ -118,7 +118,6 @@ export interface PolicyUpdateDecision {
   decision: PolicyUpdateDecisionType;
   reason: string;
   targetPolicyCardId?: string;
-  updatedPolicyCard?: Omit<PolicyCard, "id" | "botId" | "evidenceEpisodeIds" | "lastUpdatedIso">;
 }
 
 export type SplitCandidateStatus = "open" | "resolved" | "ignored";

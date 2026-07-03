@@ -5,14 +5,6 @@ interface DecidePolicyUpdateResult {
   decision: PolicyUpdateDecision["decision"];
   reason: string;
   targetPolicyCardId?: string;
-  updatedPolicyCard?: {
-    title?: string;
-    appliesWhen?: string;
-    recommendedBehavior?: string;
-    avoidBehavior?: string;
-    distinctionNotes?: string;
-    confidence?: PolicyCard["confidence"] | string;
-  };
 }
 
 export const decidePolicyCardUpdate = async (
@@ -75,7 +67,7 @@ export const decidePolicyCardUpdate = async (
       "avoidBehavior に衝突がないか確認してください。",
       "distinctionNotes が、このケースを分けて保持すべきだと示していないか確認してください。",
       "episode に user の distinction request が含まれる場合は merge を避けてください。",
-      "decision, reason, optional targetPolicyCardId, optional updatedPolicyCard を返してください。",
+      "decision, reason, optional targetPolicyCardId を返してください。",
     ].join(" "),
     episode,
     existingPolicyCards: existingCards,
@@ -97,10 +89,6 @@ export const decidePolicyCardUpdate = async (
     decision,
     reason,
     targetPolicyCardId,
-    updatedPolicyCard:
-      decision === "merge" && targetPolicyCardId
-        ? normalizeUpdatedPolicyCard(parsed.updatedPolicyCard)
-        : undefined,
   };
 };
 
@@ -127,35 +115,4 @@ const normalizeDecision = (
   return "uncertain";
 };
 
-const normalizeUpdatedPolicyCard = (
-  value: DecidePolicyUpdateResult["updatedPolicyCard"],
-): PolicyUpdateDecision["updatedPolicyCard"] | undefined => {
-  if (!value) {
-    return undefined;
-  }
-  const title = normalizeText(value.title);
-  const appliesWhen = normalizeText(value.appliesWhen);
-  const recommendedBehavior = normalizeText(value.recommendedBehavior);
-  if (!title || !appliesWhen || !recommendedBehavior) {
-    return undefined;
-  }
-  return {
-    title,
-    appliesWhen,
-    recommendedBehavior,
-    avoidBehavior: normalizeText(value.avoidBehavior),
-    distinctionNotes: normalizeText(value.distinctionNotes),
-    confidence: normalizeConfidence(value.confidence),
-  };
-};
-
 const normalizeText = (value: string | undefined): string => value?.trim() ?? "";
-
-const normalizeConfidence = (
-  value: PolicyCard["confidence"] | string | undefined,
-): PolicyCard["confidence"] => {
-  if (value === "high" || value === "medium" || value === "low") {
-    return value;
-  }
-  return "low";
-};

@@ -39,13 +39,16 @@ export class MemoryRepository {
 
   async saveTurnRecord(input: TurnRecord): Promise<void> {
     const record = ensureTurnRecordId(input);
-    await this.db.insert(memoryTurnRecordsTable).values({
-      id: record.id,
-      botId: record.botId,
-      threadId: record.threadId,
-      messagesJson: record.messages,
-      createdAt: new Date(record.createdAtIso),
-    }).onConflictDoNothing();
+    await this.db
+      .insert(memoryTurnRecordsTable)
+      .values({
+        id: record.id,
+        botId: record.botId,
+        threadId: record.threadId,
+        messagesJson: record.messages,
+        createdAt: new Date(record.createdAtIso),
+      })
+      .onConflictDoNothing();
   }
 
   async fetchTurnRecordsForThread(
@@ -65,9 +68,7 @@ export class MemoryRepository {
       .orderBy(desc(memoryTurnRecordsTable.createdAt))
       .limit(limit);
 
-    return rows
-      .map((row) => mapTurnRecordRow(row))
-      .reverse();
+    return rows.map((row) => mapTurnRecordRow(row)).reverse();
   }
 
   async fetchRecentTurnRecordsForThread(
@@ -87,15 +88,10 @@ export class MemoryRepository {
       .orderBy(desc(memoryTurnRecordsTable.createdAt))
       .limit(limit);
 
-    return rows
-      .map((row) => mapTurnRecordRow(row))
-      .reverse();
+    return rows.map((row) => mapTurnRecordRow(row)).reverse();
   }
 
-  async fetchThreadIdsForBot(
-    botId: string,
-    limit: number,
-  ): Promise<string[]> {
+  async fetchThreadIdsForBot(botId: string, limit: number): Promise<string[]> {
     const rows = await this.db.execute(sql`
       SELECT thread_id, MAX(created_at) AS latest_created_at
       FROM app.memory_turn_records
@@ -125,7 +121,9 @@ export class MemoryRepository {
           turnCount: chunk.turnCount,
           tokenEstimate: chunk.tokenEstimate,
           createdAt: new Date(chunk.createdAtIso),
-          processedAt: chunk.processedAtIso ? new Date(chunk.processedAtIso) : null,
+          processedAt: chunk.processedAtIso
+            ? new Date(chunk.processedAtIso)
+            : null,
         })),
       )
       .onConflictDoNothing();
@@ -196,7 +194,10 @@ export class MemoryRepository {
       .onConflictDoNothing();
   }
 
-  async fetchRecentEpisodes(botId: string, limit: number): Promise<EpisodeCase[]> {
+  async fetchRecentEpisodes(
+    botId: string,
+    limit: number,
+  ): Promise<EpisodeCase[]> {
     const rows = await this.db
       .select()
       .from(memoryEpisodeCasesTable)
@@ -206,7 +207,10 @@ export class MemoryRepository {
     return rows.map(mapEpisodeCaseRow);
   }
 
-  async fetchEpisodeById(botId: string, episodeId: string): Promise<EpisodeCase | null> {
+  async fetchEpisodeById(
+    botId: string,
+    episodeId: string,
+  ): Promise<EpisodeCase | null> {
     const rows = await this.db
       .select()
       .from(memoryEpisodeCasesTable)
@@ -220,7 +224,10 @@ export class MemoryRepository {
     return rows[0] ? mapEpisodeCaseRow(rows[0]) : null;
   }
 
-  async fetchPendingEpisodes(botId: string, limit: number): Promise<EpisodeCase[]> {
+  async fetchPendingEpisodes(
+    botId: string,
+    limit: number,
+  ): Promise<EpisodeCase[]> {
     const rows = await this.db
       .select()
       .from(memoryEpisodeCasesTable)
@@ -282,7 +289,10 @@ export class MemoryRepository {
     return rows.map(mapPolicyCardRow);
   }
 
-  async fetchPolicyCardById(botId: string, policyCardId: string): Promise<PolicyCard | null> {
+  async fetchPolicyCardById(
+    botId: string,
+    policyCardId: string,
+  ): Promise<PolicyCard | null> {
     const rows = await this.db
       .select()
       .from(memoryPolicyCardsTable)
@@ -296,7 +306,9 @@ export class MemoryRepository {
     return rows[0] ? mapPolicyCardRow(rows[0]) : null;
   }
 
-  async savePolicySplitCandidate(candidate: PolicySplitCandidate): Promise<void> {
+  async savePolicySplitCandidate(
+    candidate: PolicySplitCandidate,
+  ): Promise<void> {
     await this.db
       .insert(memoryPolicySplitCandidatesTable)
       .values({
@@ -425,7 +437,9 @@ const mapConversationChunkRow = (
   turnCount: row.turnCount,
   tokenEstimate: row.tokenEstimate,
   createdAtIso: new Date(row.createdAt).toISOString(),
-  processedAtIso: row.processedAt ? new Date(row.processedAt).toISOString() : undefined,
+  processedAtIso: row.processedAt
+    ? new Date(row.processedAt).toISOString()
+    : undefined,
 });
 
 const mapEpisodeCaseRow = (

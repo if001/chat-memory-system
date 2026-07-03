@@ -9,6 +9,7 @@ import {
   TurnRecord,
 } from "../domain/types";
 import { buildPolicyCardFromEpisodes } from "../application/usecases/buildPolicyCard";
+import { buildMergedPolicyCard } from "../application/usecases/buildMergedPolicyCard";
 import {
   buildConversationChunks,
   normalizeChunkingConfig,
@@ -124,6 +125,7 @@ class DefaultMemorySystemService implements MemorySystemService {
   }
 
   async ingestTurnRecord(input: TurnRecord): Promise<void> {
+    console.log("[ingestTurnRecord] save");
     await this.repository.saveTurnRecord(input);
   }
 
@@ -159,7 +161,11 @@ class DefaultMemorySystemService implements MemorySystemService {
       threadId,
       limit,
     );
+    console.log(
+      `[buildConversationChunksForThread] turnRecords=${turnRecords.length}`,
+    );
     const chunks = buildConversationChunks(turnRecords, this.chunkingConfig);
+    console.log(`[buildConversationChunksForThread] chunks=${chunks.length}`);
     await this.repository.saveConversationChunks(chunks);
     return chunks;
   }
@@ -180,14 +186,14 @@ class DefaultMemorySystemService implements MemorySystemService {
       limit,
     );
     const episodes: EpisodeCase[] = [];
-
+    console.log(`[processPendingEpisodes]: chunks=${chunks.length}`);
     for (const chunk of chunks) {
       const episode = await extractEpisodeCaseFromChunk(this.llm, chunk);
       await this.repository.saveEpisodeCase(episode);
       await this.repository.markConversationChunkProcessed(chunk.id);
       episodes.push(episode);
     }
-
+    console.log(`[processPendingEpisodes]: episodes=${episodes.length}`);
     return episodes;
   }
 
@@ -238,10 +244,12 @@ class DefaultMemorySystemService implements MemorySystemService {
       recentTurns,
       this.policyQueryHistoryMaxTokens,
     );
+    console.log("[buildOrUpdatePolicyCards] input.botId:", input.botId);
     const candidates = await this.repository.fetchPolicyCards(
       input.botId,
       input.limit ?? 10,
     );
+    console.log(`[buildOrUpdatePolicyCards]: candidates=${candidates.length}`);
     return filterApplicablePolicyCards(this.llm, queryContext, candidates);
   }
 
@@ -364,10 +372,15 @@ class DefaultMemorySystemService implements MemorySystemService {
       const existing = existingCards.find(
         (card) => card.id === decision.targetPolicyCardId,
       );
-      if (existing && decision.updatedPolicyCard) {
+      if (existing) {
+        const mergedCardBody = await buildMergedPolicyCard(
+          this.llm,
+          existing,
+          episode,
+        );
         const updatedCard = mergePolicyCardUpdate(
           existing,
-          decision.updatedPolicyCard,
+          mergedCardBody,
           episode,
         );
         await this.repository.upsertPolicyCard(updatedCard);
