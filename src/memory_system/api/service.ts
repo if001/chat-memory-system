@@ -2,7 +2,6 @@ import {
   ChunkingConfig,
   ConversationChunk,
   EpisodeCase,
-  MemoryReport,
   PolicyCard,
   PolicySplitCandidate,
   RelationshipInsightReport,
@@ -86,7 +85,6 @@ export interface MemorySystemService {
     candidateId: string,
   ): Promise<PolicySplitCandidate | null>;
   queryApplicablePolicyCards(input: QueryPolicyInput): Promise<PolicyCard[]>;
-  generateMemoryReport(botId: string, threadId: string): Promise<MemoryReport>;
   generateRelationshipInsightReport(
     botId: string,
     threadId: string,
@@ -202,6 +200,7 @@ class DefaultMemorySystemService implements MemorySystemService {
     limit: number = 20,
   ): Promise<PolicyCard[]> {
     const episodes = await this.repository.fetchPendingEpisodes(botId, limit);
+    console.log("[buildOrUpdatePolicyCards]: episordes len=", episodes.length);
     if (episodes.length === 0) {
       return [];
     }
@@ -244,12 +243,14 @@ class DefaultMemorySystemService implements MemorySystemService {
       recentTurns,
       this.policyQueryHistoryMaxTokens,
     );
-    console.log("[buildOrUpdatePolicyCards] input.botId:", input.botId);
+    console.log("[queryApplicablePolicyCards] input.botId:", input.botId);
     const candidates = await this.repository.fetchPolicyCards(
       input.botId,
       input.limit ?? 10,
     );
-    console.log(`[buildOrUpdatePolicyCards]: candidates=${candidates.length}`);
+    console.log(
+      `[queryApplicablePolicyCards]: candidates=${candidates.length}`,
+    );
     return filterApplicablePolicyCards(this.llm, queryContext, candidates);
   }
 
@@ -272,21 +273,6 @@ class DefaultMemorySystemService implements MemorySystemService {
     candidateId: string,
   ): Promise<PolicySplitCandidate | null> {
     return this.transitionSplitCandidate(botId, candidateId, "ignored");
-  }
-
-  async generateMemoryReport(
-    botId: string,
-    threadId: string,
-  ): Promise<MemoryReport> {
-    const cards = await this.repository.fetchPolicyCards(botId, 20);
-    const signals = buildMemoryReportSignals(cards, new Date());
-    return this.repository.createMemoryReport(
-      botId,
-      threadId,
-      signals.gaps,
-      signals.staleNotes,
-      signals.conflicts,
-    );
   }
 
   async generateRelationshipInsightReport(
@@ -461,55 +447,6 @@ export const createMemorySystemService = (
   options: MemorySystemOptions,
 ): MemorySystemService => {
   return new DefaultMemorySystemService(options);
-};
-
-export const buildMemoryReportSignals = (
-  cards: PolicyCard[],
-  now: Date,
-): Pick<MemoryReport, "gaps" | "staleNotes" | "conflicts"> => {
-  const gaps: string[] = [];
-  const staleNotes: string[] = [];
-  const conflicts: string[] = [];
-
-  if (cards.length === 0) {
-    gaps.push("No policy cards exist yet for this bot");
-  }
-
-  const highConfidenceCount = cards.filter(
-    (card) => card.confidence === "high",
-  ).length;
-  if (cards.length > 0 && highConfidenceCount === 0) {
-    gaps.push("No high-confidence policy card exists");
-  }
-
-  const staleThresholdMs = 30 * 24 * 60 * 60 * 1000;
-  for (const card of cards) {
-    const ageMs = now.getTime() - new Date(card.lastUpdatedIso).getTime();
-    if (ageMs > staleThresholdMs) {
-      staleNotes.push(`Policy card is stale: ${card.id}`);
-    }
-  }
-
-  const byTitle = new Map<string, PolicyCard[]>();
-  for (const card of cards) {
-    const key = card.title.trim().toLowerCase();
-    byTitle.set(key, [...(byTitle.get(key) ?? []), card]);
-  }
-  for (const [key, group] of byTitle.entries()) {
-    if (group.length < 2) {
-      continue;
-    }
-    const behaviors = new Set(
-      group.map((card) => card.recommendedBehavior.trim().toLowerCase()),
-    );
-    if (behaviors.size > 1) {
-      conflicts.push(
-        `Conflicting recommended behavior detected for title: ${key}`,
-      );
-    }
-  }
-
-  return { gaps, staleNotes, conflicts };
 };
 
 const replaceCard = (

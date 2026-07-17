@@ -195,30 +195,6 @@ test("ignoreSplitCandidate updates candidate status", async () => {
   assert.deepEqual(updatedStatuses, [{ id: "candidate-1", status: "ignored" }]);
 });
 
-test("generateMemoryReport delegates built signals to repository", async () => {
-  const service = createStubbedService({
-    fetchPolicyCards: async () => [
-      buildPolicyCard("ao", "pc-1", {
-        confidence: "low",
-        lastUpdatedIso: "2026-01-01T00:00:00.000Z",
-      }),
-    ],
-    createMemoryReport: async (botId, threadId, gaps, staleNotes, conflicts) => ({
-      botId,
-      threadId,
-      gaps,
-      staleNotes,
-      conflicts,
-      createdAtIso: "2026-05-26T00:00:00.000Z",
-    }),
-  });
-
-  const report = await service.generateMemoryReport("ao", "thread-1");
-
-  assert.ok(report.gaps.includes("No high-confidence policy card exists"));
-  assert.ok(report.staleNotes.some((note) => note.includes("pc-1")));
-});
-
 test("generateRelationshipInsightReport returns llm-derived user-facing candidates", async () => {
   const service = createStubbedService({
     generateJsonQueue: [
@@ -296,20 +272,6 @@ type RepositoryStub = {
     botId: string,
     policyCardId: string,
   ): Promise<PolicyCard | null>;
-  createMemoryReport(
-    botId: string,
-    threadId: string,
-    gaps: string[],
-    staleNotes: string[],
-    conflicts: string[],
-  ): Promise<{
-    botId: string;
-    threadId: string;
-    gaps: string[];
-    staleNotes: string[];
-    conflicts: string[];
-    createdAtIso: string;
-  }>;
 };
 
 const createStubbedService = (
@@ -354,14 +316,6 @@ const createStubbedService = (
     updatePolicySplitCandidateStatus: async () => {},
     fetchEpisodeById: async () => null,
     fetchPolicyCardById: async () => null,
-    createMemoryReport: async (botId, threadId, gaps, staleNotes, conflicts) => ({
-      botId,
-      threadId,
-      gaps,
-      staleNotes,
-      conflicts,
-      createdAtIso: "2026-05-26T00:00:00.000Z",
-    }),
     ...overrides,
   };
 

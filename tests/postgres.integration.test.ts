@@ -260,7 +260,6 @@ const cleanupBot = async (
   const pool = new Pool({ connectionString: postgresUrl });
   try {
     await pool.query("DELETE FROM app.memory_policy_split_candidates WHERE bot_id = $1", [botId]);
-    await pool.query("DELETE FROM app.memory_reports WHERE bot_id = $1", [botId]);
     await pool.query("DELETE FROM app.memory_policy_cards WHERE bot_id = $1", [botId]);
     await pool.query("DELETE FROM app.memory_episode_cases WHERE bot_id = $1", [botId]);
     await pool.query("DELETE FROM app.memory_conversation_chunks WHERE bot_id = $1", [botId]);
@@ -413,14 +412,6 @@ const testRepositoryEpisodeAndSplitCandidateLifecycle = async (): Promise<void> 
     );
     assert.equal(updatedCandidate?.status, "resolved");
 
-    const report = await repository.createMemoryReport(
-      botId,
-      "thread-1",
-      ["gap-1"],
-      ["stale-1"],
-      ["conflict-1"],
-    );
-    assert.deepEqual(report.gaps, ["gap-1"]);
   } finally {
     await cleanupBot(repository, botId);
     await repository.close();

@@ -14,6 +14,7 @@ export const buildMergedPolicyCard = async (
   existingCard: PolicyCard,
   episode: EpisodeCase,
 ): Promise<BuildMergedPolicyResult> => {
+  console.log("[buildMergedPolicyCard]: update policy card");
   const parsed = await llm.generateJson<BuildMergedPolicyResult>(
     [
       "あなたは policy card editor です。",

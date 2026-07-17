@@ -132,15 +132,6 @@ export interface PolicySplitCandidate {
   createdAtIso: string;
 }
 
-export interface MemoryReport {
-  botId: string;
-  threadId: string;
-  gaps: string[];
-  staleNotes: string[];
-  conflicts: string[];
-  createdAtIso: string;
-}
-
 export interface RelationshipInsightReport {
   botId: string;
   threadId: string;

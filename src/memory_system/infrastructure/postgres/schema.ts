@@ -8,7 +8,6 @@ import {
 import {
   ConversationChunk,
   EpisodeCase,
-  MemoryReport,
   PolicyCard,
   PolicySplitCandidate,
   TurnRecord,
@@ -74,16 +73,6 @@ export const memoryPolicyCardsTable = appSchema.table("memory_policy_cards", {
     .$type<PolicyCard["evidenceEpisodeIds"]>()
     .notNull(),
   lastUpdated: timestamp("last_updated", { withTimezone: true }).notNull(),
-});
-
-export const memoryReportsTable = appSchema.table("memory_reports", {
-  id: text("id").primaryKey(),
-  botId: text("bot_id").notNull(),
-  threadId: text("thread_id").notNull(),
-  gapsJson: jsonb("gaps_json").$type<MemoryReport["gaps"]>().notNull(),
-  staleNotesJson: jsonb("stale_notes_json").$type<MemoryReport["staleNotes"]>().notNull(),
-  conflictsJson: jsonb("conflicts_json").$type<MemoryReport["conflicts"]>().notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
 });
 
 export const memoryPolicySplitCandidatesTable = appSchema.table("memory_policy_split_candidates", {

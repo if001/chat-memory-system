@@ -4,14 +4,12 @@ import { Pool } from "pg";
 import {
   ConversationChunk,
   EpisodeCase,
-  MemoryReport,
   PolicyCard,
   PolicyConfidence,
   PolicySplitCandidate,
   TurnRecord,
 } from "../../domain/types";
 import {
-  buildTurnRecordId,
   ensureTurnRecordId,
 } from "../../domain/identifiers";
 import { createDrizzleClient } from "./drizzleClient";
@@ -20,7 +18,6 @@ import {
   memoryEpisodeCasesTable,
   memoryPolicyCardsTable,
   memoryPolicySplitCandidatesTable,
-  memoryReportsTable,
   memoryTurnRecordsTable,
 } from "./schema";
 
@@ -372,38 +369,6 @@ export class MemoryRepository {
           eq(memoryPolicySplitCandidatesTable.id, candidateId),
         ),
       );
-  }
-
-  async createMemoryReport(
-    botId: string,
-    threadId: string,
-    gaps: string[],
-    staleNotes: string[],
-    conflicts: string[],
-  ): Promise<MemoryReport> {
-    const createdAtIso = new Date().toISOString();
-    await this.db.insert(memoryReportsTable).values({
-      id: `report_${buildTurnRecordId({
-        botId,
-        threadId,
-        createdAtIso,
-        messages: [],
-      })}`,
-      botId,
-      threadId,
-      gapsJson: gaps,
-      staleNotesJson: staleNotes,
-      conflictsJson: conflicts,
-      createdAt: new Date(createdAtIso),
-    });
-    return {
-      botId,
-      threadId,
-      gaps,
-      staleNotes,
-      conflicts,
-      createdAtIso,
-    };
   }
 }
 
