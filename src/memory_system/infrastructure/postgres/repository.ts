@@ -1,23 +1,18 @@
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import {
   ConversationChunk,
   EpisodeCase,
   PolicyCard,
-  PolicyConfidence,
-  PolicySplitCandidate,
   TurnRecord,
 } from "../../domain/types";
-import {
-  ensureTurnRecordId,
-} from "../../domain/identifiers";
+import { ensureTurnRecordId } from "../../domain/identifiers";
 import { createDrizzleClient } from "./drizzleClient";
 import {
   memoryConversationChunksTable,
   memoryEpisodeCasesTable,
   memoryPolicyCardsTable,
-  memoryPolicySplitCandidatesTable,
   memoryTurnRecordsTable,
 } from "./schema";
 
@@ -64,8 +59,7 @@ export class MemoryRepository {
       )
       .orderBy(desc(memoryTurnRecordsTable.createdAt))
       .limit(limit);
-
-    return rows.map((row) => mapTurnRecordRow(row)).reverse();
+    return rows.map(mapTurnRecordRow).reverse();
   }
 
   async fetchRecentTurnRecordsForThread(
@@ -73,19 +67,7 @@ export class MemoryRepository {
     threadId: string,
     limit: number,
   ): Promise<TurnRecord[]> {
-    const rows = await this.db
-      .select()
-      .from(memoryTurnRecordsTable)
-      .where(
-        and(
-          eq(memoryTurnRecordsTable.botId, botId),
-          eq(memoryTurnRecordsTable.threadId, threadId),
-        ),
-      )
-      .orderBy(desc(memoryTurnRecordsTable.createdAt))
-      .limit(limit);
-
-    return rows.map((row) => mapTurnRecordRow(row)).reverse();
+    return this.fetchTurnRecordsForThread(botId, threadId, limit);
   }
 
   async fetchThreadIdsForBot(botId: string, limit: number): Promise<string[]> {
@@ -178,27 +160,59 @@ export class MemoryRepository {
         botId: episode.botId,
         threadId: episode.threadId,
         sourceChunkId: episode.sourceChunkId ?? null,
-        stateLabel: episode.stateLabel,
-        stateDescription: episode.stateDescription,
-        actionLabel: episode.actionLabel,
-        actionDescription: episode.actionDescription,
+        state: episode.state,
+        action: episode.action,
         outcome: episode.outcome,
-        outcomeAssessmentJson: episode.outcomeAssessment,
-        feedbackSignalsJson: episode.feedbackSignals,
-        policyUpdateNote: episode.policyUpdateNote,
+        stateEmbeddingVectorJson: episode.stateEmbeddingVector,
+        actionEmbeddingVectorJson: episode.actionEmbeddingVector,
+        outcomeEmbeddingVectorJson: episode.outcomeEmbeddingVector,
+        relatedCardId: episode.relatedCardId ?? null,
         createdAt: new Date(episode.createdAtIso),
       })
       .onConflictDoNothing();
   }
 
-  async fetchRecentEpisodes(
+  async fetchPendingEpisodes(
     botId: string,
     limit: number,
   ): Promise<EpisodeCase[]> {
     const rows = await this.db
       .select()
       .from(memoryEpisodeCasesTable)
+      .where(
+        and(
+          eq(memoryEpisodeCasesTable.botId, botId),
+          isNull(memoryEpisodeCasesTable.processedAt),
+        ),
+      )
+      .orderBy(memoryEpisodeCasesTable.createdAt)
+      .limit(limit);
+    return rows.map(mapEpisodeCaseRow);
+  }
+
+  async fetchRecentEpisodes(botId: string, limit: number): Promise<EpisodeCase[]> {
+    const rows = await this.db
+      .select()
+      .from(memoryEpisodeCasesTable)
       .where(eq(memoryEpisodeCasesTable.botId, botId))
+      .orderBy(desc(memoryEpisodeCasesTable.createdAt))
+      .limit(limit);
+    return rows.map(mapEpisodeCaseRow);
+  }
+
+  async fetchUnassignedEpisodes(
+    botId: string,
+    limit: number,
+  ): Promise<EpisodeCase[]> {
+    const rows = await this.db
+      .select()
+      .from(memoryEpisodeCasesTable)
+      .where(
+        and(
+          eq(memoryEpisodeCasesTable.botId, botId),
+          isNull(memoryEpisodeCasesTable.relatedCardId),
+        ),
+      )
       .orderBy(desc(memoryEpisodeCasesTable.createdAt))
       .limit(limit);
     return rows.map(mapEpisodeCaseRow);
@@ -221,22 +235,42 @@ export class MemoryRepository {
     return rows[0] ? mapEpisodeCaseRow(rows[0]) : null;
   }
 
-  async fetchPendingEpisodes(
+  async fetchEpisodesByIds(
     botId: string,
-    limit: number,
+    episodeIds: string[],
   ): Promise<EpisodeCase[]> {
+    if (episodeIds.length === 0) {
+      return [];
+    }
     const rows = await this.db
       .select()
       .from(memoryEpisodeCasesTable)
       .where(
         and(
           eq(memoryEpisodeCasesTable.botId, botId),
-          isNull(memoryEpisodeCasesTable.processedAt),
+          inArray(memoryEpisodeCasesTable.id, episodeIds),
         ),
-      )
-      .orderBy(memoryEpisodeCasesTable.createdAt)
-      .limit(limit);
+      );
     return rows.map(mapEpisodeCaseRow);
+  }
+
+  async updateEpisodeRelatedCard(
+    botId: string,
+    episodeIds: string[],
+    relatedCardId?: string,
+  ): Promise<void> {
+    if (episodeIds.length === 0) {
+      return;
+    }
+    await this.db
+      .update(memoryEpisodeCasesTable)
+      .set({ relatedCardId: relatedCardId ?? null })
+      .where(
+        and(
+          eq(memoryEpisodeCasesTable.botId, botId),
+          inArray(memoryEpisodeCasesTable.id, episodeIds),
+        ),
+      );
   }
 
   async markEpisodeProcessed(episodeId: string): Promise<void> {
@@ -252,25 +286,26 @@ export class MemoryRepository {
       .values({
         id: card.id,
         botId: card.botId,
-        title: card.title,
-        appliesWhen: card.appliesWhen,
-        recommendedBehavior: card.recommendedBehavior,
-        avoidBehavior: card.avoidBehavior,
-        distinctionNotes: card.distinctionNotes,
-        confidence: card.confidence,
-        evidenceEpisodeIdsJson: card.evidenceEpisodeIds,
+        state: card.state,
+        action: card.action,
+        outcome: card.outcome,
+        stateEmbeddingVectorJson: card.stateEmbeddingVector,
+        actionEmbeddingVectorJson: card.actionEmbeddingVector,
+        outcomeEmbeddingVectorJson: card.outcomeEmbeddingVector,
+        relatedEpisodeIdsJson: card.relatedEpisodeIds,
+        createdAt: new Date(card.createdAtIso),
         lastUpdated: new Date(card.lastUpdatedIso),
       })
       .onConflictDoUpdate({
         target: memoryPolicyCardsTable.id,
         set: {
-          title: card.title,
-          appliesWhen: card.appliesWhen,
-          recommendedBehavior: card.recommendedBehavior,
-          avoidBehavior: card.avoidBehavior,
-          distinctionNotes: card.distinctionNotes,
-          confidence: card.confidence,
-          evidenceEpisodeIdsJson: card.evidenceEpisodeIds,
+          state: card.state,
+          action: card.action,
+          outcome: card.outcome,
+          stateEmbeddingVectorJson: card.stateEmbeddingVector,
+          actionEmbeddingVectorJson: card.actionEmbeddingVector,
+          outcomeEmbeddingVectorJson: card.outcomeEmbeddingVector,
+          relatedEpisodeIdsJson: card.relatedEpisodeIds,
           lastUpdated: new Date(card.lastUpdatedIso),
         },
       });
@@ -302,82 +337,7 @@ export class MemoryRepository {
       .limit(1);
     return rows[0] ? mapPolicyCardRow(rows[0]) : null;
   }
-
-  async savePolicySplitCandidate(
-    candidate: PolicySplitCandidate,
-  ): Promise<void> {
-    await this.db
-      .insert(memoryPolicySplitCandidatesTable)
-      .values({
-        id: candidate.id,
-        botId: candidate.botId,
-        episodeId: candidate.episodeId,
-        targetPolicyCardId: candidate.targetPolicyCardId ?? null,
-        reason: candidate.reason,
-        status: candidate.status,
-        createdAt: new Date(candidate.createdAtIso),
-      })
-      .onConflictDoNothing();
-  }
-
-  async fetchOpenSplitCandidates(
-    botId: string,
-    limit: number,
-  ): Promise<PolicySplitCandidate[]> {
-    const rows = await this.db
-      .select()
-      .from(memoryPolicySplitCandidatesTable)
-      .where(
-        and(
-          eq(memoryPolicySplitCandidatesTable.botId, botId),
-          eq(memoryPolicySplitCandidatesTable.status, "open"),
-        ),
-      )
-      .orderBy(desc(memoryPolicySplitCandidatesTable.createdAt))
-      .limit(limit);
-    return rows.map(mapPolicySplitCandidateRow);
-  }
-
-  async fetchPolicySplitCandidateById(
-    botId: string,
-    candidateId: string,
-  ): Promise<PolicySplitCandidate | null> {
-    const rows = await this.db
-      .select()
-      .from(memoryPolicySplitCandidatesTable)
-      .where(
-        and(
-          eq(memoryPolicySplitCandidatesTable.botId, botId),
-          eq(memoryPolicySplitCandidatesTable.id, candidateId),
-        ),
-      )
-      .limit(1);
-    return rows[0] ? mapPolicySplitCandidateRow(rows[0]) : null;
-  }
-
-  async updatePolicySplitCandidateStatus(
-    botId: string,
-    candidateId: string,
-    status: PolicySplitCandidate["status"],
-  ): Promise<void> {
-    await this.db
-      .update(memoryPolicySplitCandidatesTable)
-      .set({ status })
-      .where(
-        and(
-          eq(memoryPolicySplitCandidatesTable.botId, botId),
-          eq(memoryPolicySplitCandidatesTable.id, candidateId),
-        ),
-      );
-  }
 }
-
-const toPolicyConfidence = (value: string): PolicyConfidence => {
-  if (value === "high" || value === "medium" || value === "low") {
-    return value;
-  }
-  return "low";
-};
 
 const mapTurnRecordRow = (
   row: typeof memoryTurnRecordsTable.$inferSelect,
@@ -414,14 +374,13 @@ const mapEpisodeCaseRow = (
   botId: row.botId,
   threadId: row.threadId,
   sourceChunkId: row.sourceChunkId ?? undefined,
-  stateLabel: row.stateLabel,
-  stateDescription: row.stateDescription,
-  actionLabel: row.actionLabel,
-  actionDescription: row.actionDescription,
+  state: row.state,
+  action: row.action,
   outcome: row.outcome,
-  outcomeAssessment: row.outcomeAssessmentJson,
-  feedbackSignals: row.feedbackSignalsJson ?? [],
-  policyUpdateNote: row.policyUpdateNote,
+  stateEmbeddingVector: row.stateEmbeddingVectorJson ?? [],
+  actionEmbeddingVector: row.actionEmbeddingVectorJson ?? [],
+  outcomeEmbeddingVector: row.outcomeEmbeddingVectorJson ?? [],
+  relatedCardId: row.relatedCardId ?? undefined,
   createdAtIso: new Date(row.createdAt).toISOString(),
 });
 
@@ -430,24 +389,13 @@ const mapPolicyCardRow = (
 ): PolicyCard => ({
   id: row.id,
   botId: row.botId,
-  title: row.title,
-  appliesWhen: row.appliesWhen,
-  recommendedBehavior: row.recommendedBehavior,
-  avoidBehavior: row.avoidBehavior,
-  distinctionNotes: row.distinctionNotes,
-  confidence: toPolicyConfidence(row.confidence),
-  evidenceEpisodeIds: row.evidenceEpisodeIdsJson ?? [],
-  lastUpdatedIso: new Date(row.lastUpdated).toISOString(),
-});
-
-const mapPolicySplitCandidateRow = (
-  row: typeof memoryPolicySplitCandidatesTable.$inferSelect,
-): PolicySplitCandidate => ({
-  id: row.id,
-  botId: row.botId,
-  episodeId: row.episodeId,
-  targetPolicyCardId: row.targetPolicyCardId ?? undefined,
-  reason: row.reason,
-  status: row.status,
+  state: row.state,
+  action: row.action,
+  outcome: row.outcome,
+  stateEmbeddingVector: row.stateEmbeddingVectorJson ?? [],
+  actionEmbeddingVector: row.actionEmbeddingVectorJson ?? [],
+  outcomeEmbeddingVector: row.outcomeEmbeddingVectorJson ?? [],
+  relatedEpisodeIds: row.relatedEpisodeIdsJson ?? [],
   createdAtIso: new Date(row.createdAt).toISOString(),
+  lastUpdatedIso: new Date(row.lastUpdated).toISOString(),
 });

@@ -21,11 +21,9 @@ export const filterApplicablePolicyCards = async (
     currentContext,
     policyCards: cards.map((c) => ({
       id: c.id,
-      title: c.title,
-      appliesWhen: c.appliesWhen,
-      distinctionNotes: c.distinctionNotes,
-      recommendedBehavior: c.recommendedBehavior,
-      avoidBehavior: c.avoidBehavior,
+      state: c.state,
+      action: c.action,
+      outcome: c.outcome,
     })),
   });
   const parsed = await llm.generateJson<string[]>(

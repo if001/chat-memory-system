@@ -3,24 +3,25 @@ import {
   ConversationChunk,
   EpisodeCase,
   PolicyCard,
-  PolicySplitCandidate,
+  PolicyEvaluation,
+  PolicyHypothesis,
   RelationshipInsightReport,
   TurnRecord,
 } from "../domain/types";
-import { buildPolicyCardFromEpisodes } from "../application/usecases/buildPolicyCard";
-import { buildMergedPolicyCard } from "../application/usecases/buildMergedPolicyCard";
+import { buildPolicyHypothesisFromEpisodes } from "../application/usecases/buildPolicyCard";
+import {
+  applyEpisodeToPolicyCardFlow,
+  createPolicyCardFlowCache,
+  PolicyCardFlowPorts,
+} from "../application/usecases/policyCardFlow";
 import {
   buildConversationChunks,
   normalizeChunkingConfig,
 } from "../application/usecases/buildConversationChunks";
 import { buildPolicyQueryContext } from "../application/usecases/buildPolicyQueryContext";
-import { mergePolicyCardUpdate } from "../application/usecases/mergePolicyCardUpdate";
-import { applyResolvedSplitCandidate } from "../application/usecases/applyResolvedSplitCandidate";
-import { decidePolicyCardUpdate } from "../application/usecases/decidePolicyCardUpdate";
-import { extractEpisodeCaseFromChunk } from "../application/usecases/extractEpisodeCase";
+import { extractEpisodeCasesFromChunk } from "../application/usecases/extractEpisodeCase";
 import { filterApplicablePolicyCards } from "../application/usecases/filterApplicablePolicyCards";
-import { transitionPolicySplitCandidate } from "../application/usecases/transitionPolicySplitCandidate";
-import { buildSplitCandidateId } from "../domain/identifiers";
+import { OllamaEmbeddingClient } from "../infrastructure/ollama/embeddingClient";
 import { OllamaClient } from "../infrastructure/ollama/client";
 import {
   createFileCachedJsonClient,
@@ -34,12 +35,17 @@ export interface MemorySystemOptions {
   ollamaBaseUrl: string;
   ollamaModel: string;
   ollamaAPIKey: string;
+  ollamaEmbeddingBaseUrl?: string;
+  ollamaEmbeddingModel?: string;
+  ollamaEmbeddingDimension?: number;
   llmCacheDir?: string;
   llmCacheTtlMs?: number;
   chunkSizeTurns?: number;
   chunkOverlapTurns?: number;
   policyQueryHistoryTurns?: number;
   policyQueryHistoryMaxTokens?: number;
+  policySearchLimit?: number;
+  policyFlowPorts?: Partial<PolicyCardFlowPorts>;
 }
 
 export interface QueryPolicyInput {
@@ -72,18 +78,6 @@ export interface MemorySystemService {
     botId: string,
     limit?: number,
   ): Promise<PolicyCard[]>;
-  listOpenSplitCandidates(
-    botId: string,
-    limit?: number,
-  ): Promise<PolicySplitCandidate[]>;
-  resolveSplitCandidate(
-    botId: string,
-    candidateId: string,
-  ): Promise<PolicySplitCandidate | null>;
-  ignoreSplitCandidate(
-    botId: string,
-    candidateId: string,
-  ): Promise<PolicySplitCandidate | null>;
   queryApplicablePolicyCards(input: QueryPolicyInput): Promise<PolicyCard[]>;
   generateRelationshipInsightReport(
     botId: string,
@@ -94,9 +88,12 @@ export interface MemorySystemService {
 class DefaultMemorySystemService implements MemorySystemService {
   private readonly llm: JsonGeneratingClient;
   private readonly repository: MemoryRepository;
+  private readonly embedText?: (text: string) => Promise<number[]>;
   private readonly chunkingConfig: ChunkingConfig;
   private readonly policyQueryHistoryTurns: number;
   private readonly policyQueryHistoryMaxTokens: number;
+  private readonly policySearchLimit: number;
+  private readonly policyFlowPorts: PolicyCardFlowPorts;
 
   constructor(private readonly options: MemorySystemOptions) {
     this.llm = createFileCachedJsonClient(
@@ -113,6 +110,15 @@ class DefaultMemorySystemService implements MemorySystemService {
       },
     );
     this.repository = new MemoryRepository(options.postgresUrl);
+    if (options.ollamaEmbeddingModel) {
+      const embeddingClient = new OllamaEmbeddingClient(
+        options.ollamaEmbeddingBaseUrl ?? options.ollamaBaseUrl,
+        options.ollamaEmbeddingModel,
+        options.ollamaEmbeddingDimension,
+        options.ollamaAPIKey,
+      );
+      this.embedText = (text: string) => embeddingClient.embed(text);
+    }
     this.chunkingConfig = normalizeChunkingConfig({
       chunkSizeTurns: options.chunkSizeTurns,
       chunkOverlapTurns: options.chunkOverlapTurns,
@@ -120,10 +126,15 @@ class DefaultMemorySystemService implements MemorySystemService {
     this.policyQueryHistoryTurns = options.policyQueryHistoryTurns ?? 4;
     this.policyQueryHistoryMaxTokens =
       options.policyQueryHistoryMaxTokens ?? 1000;
+    this.policySearchLimit = options.policySearchLimit ?? 5;
+    this.policyFlowPorts = buildDefaultPolicyFlowPorts(
+      this.llm,
+      this.embedText,
+      options,
+    );
   }
 
   async ingestTurnRecord(input: TurnRecord): Promise<void> {
-    console.log("[ingestTurnRecord] save");
     await this.repository.saveTurnRecord(input);
   }
 
@@ -159,11 +170,7 @@ class DefaultMemorySystemService implements MemorySystemService {
       threadId,
       limit,
     );
-    console.log(
-      `[buildConversationChunksForThread] turnRecords=${turnRecords.length}`,
-    );
     const chunks = buildConversationChunks(turnRecords, this.chunkingConfig);
-    console.log(`[buildConversationChunksForThread] chunks=${chunks.length}`);
     await this.repository.saveConversationChunks(chunks);
     return chunks;
   }
@@ -184,14 +191,18 @@ class DefaultMemorySystemService implements MemorySystemService {
       limit,
     );
     const episodes: EpisodeCase[] = [];
-    console.log(`[processPendingEpisodes]: chunks=${chunks.length}`);
     for (const chunk of chunks) {
-      const episode = await extractEpisodeCaseFromChunk(this.llm, chunk);
-      await this.repository.saveEpisodeCase(episode);
+      const extracted = await extractEpisodeCasesFromChunk(
+        this.llm,
+        chunk,
+        this.embedText,
+      );
+      for (const episode of extracted) {
+        await this.repository.saveEpisodeCase(episode);
+        episodes.push(episode);
+      }
       await this.repository.markConversationChunkProcessed(chunk.id);
-      episodes.push(episode);
     }
-    console.log(`[processPendingEpisodes]: episodes=${episodes.length}`);
     return episodes;
   }
 
@@ -199,34 +210,79 @@ class DefaultMemorySystemService implements MemorySystemService {
     botId: string,
     limit: number = 20,
   ): Promise<PolicyCard[]> {
+    console.log("[buildOrUpdatePolicyCards]: start");
     const episodes = await this.repository.fetchPendingEpisodes(botId, limit);
-    console.log("[buildOrUpdatePolicyCards]: episordes len=", episodes.length);
     if (episodes.length === 0) {
       return [];
     }
+
     const updatedCards: PolicyCard[] = [];
-    let existingCards = await this.repository.fetchPolicyCards(botId, 50);
-
+    const cache = createPolicyCardFlowCache();
+    console.log("[buildOrUpdatePolicyCards]: episodes.len=", episodes.length);
     for (const episode of episodes) {
-      const decision = await decidePolicyCardUpdate(
-        this.llm,
-        episode,
-        existingCards,
+      const existingCards = await this.repository.fetchPolicyCards(botId, 100);
+      const episodeIds = existingCards.flatMap(
+        (card) => card.relatedEpisodeIds,
       );
-      const card = await this.applyPolicyDecision(
-        botId,
-        episode,
-        decision,
-        existingCards,
-      );
-      await this.repository.markEpisodeProcessed(episode.id);
-      if (!card) {
-        continue;
+      const relatedEpisodes = await this.repository.fetchEpisodesByIds(botId, [
+        ...new Set(episodeIds),
+      ]);
+      const episodesByCardId = new Map<string, EpisodeCase[]>();
+      for (const card of existingCards) {
+        const related = relatedEpisodes.filter((candidate) =>
+          card.relatedEpisodeIds.includes(candidate.id),
+        );
+        episodesByCardId.set(card.id, related);
       }
-      updatedCards.push(card);
-      existingCards = replaceCard(existingCards, card);
-    }
+      const unassignedEpisodes = (
+        await this.repository.fetchUnassignedEpisodes(botId, 200)
+      ).filter((candidate) => candidate.id !== episode.id);
 
+      const result = await applyEpisodeToPolicyCardFlow({
+        botId,
+        newEpisode: episode,
+        existingCards,
+        episodesByCardId,
+        unassignedEpisodes,
+        searchLimit: this.policySearchLimit,
+        ports: this.policyFlowPorts,
+        cache,
+      });
+
+      for (const card of result.updatedCards) {
+        await this.repository.upsertPolicyCard(card);
+        updatedCards.push(card);
+      }
+
+      if (result.outcome === "merged" || result.outcome === "created") {
+        await this.repository.updateEpisodeRelatedCard(
+          botId,
+          result.assignedEpisodeIds,
+          result.updatedCards[0]?.id,
+        );
+      }
+
+      if (result.outcome === "split") {
+        const [updatedOriginalCard, createdCard] = result.updatedCards;
+        const newCardEpisodeIds = createdCard.relatedEpisodeIds;
+        const originalEpisodeIds = updatedOriginalCard.relatedEpisodeIds;
+        await Promise.all([
+          this.repository.updateEpisodeRelatedCard(
+            botId,
+            newCardEpisodeIds,
+            createdCard.id,
+          ),
+          this.repository.updateEpisodeRelatedCard(
+            botId,
+            originalEpisodeIds,
+            updatedOriginalCard.id,
+          ),
+        ]);
+      }
+
+      await this.repository.markEpisodeProcessed(episode.id);
+    }
+    console.log("[buildOrUpdatePolicyCards]: done");
     return updatedCards;
   }
 
@@ -243,36 +299,11 @@ class DefaultMemorySystemService implements MemorySystemService {
       recentTurns,
       this.policyQueryHistoryMaxTokens,
     );
-    console.log("[queryApplicablePolicyCards] input.botId:", input.botId);
     const candidates = await this.repository.fetchPolicyCards(
       input.botId,
       input.limit ?? 10,
     );
-    console.log(
-      `[queryApplicablePolicyCards]: candidates=${candidates.length}`,
-    );
     return filterApplicablePolicyCards(this.llm, queryContext, candidates);
-  }
-
-  async listOpenSplitCandidates(
-    botId: string,
-    limit: number = 20,
-  ): Promise<PolicySplitCandidate[]> {
-    return this.repository.fetchOpenSplitCandidates(botId, limit);
-  }
-
-  async resolveSplitCandidate(
-    botId: string,
-    candidateId: string,
-  ): Promise<PolicySplitCandidate | null> {
-    return this.transitionSplitCandidate(botId, candidateId, "resolved");
-  }
-
-  async ignoreSplitCandidate(
-    botId: string,
-    candidateId: string,
-  ): Promise<PolicySplitCandidate | null> {
-    return this.transitionSplitCandidate(botId, candidateId, "ignored");
   }
 
   async generateRelationshipInsightReport(
@@ -306,29 +337,15 @@ class DefaultMemorySystemService implements MemorySystemService {
     }>(
       [
         "あなたは autonomous assistant 向けの relationship-support insight candidate を作成します。",
-        "目的は memory 内部の保守ではなく、ユーザー向けに行いうる支援アクション候補を提案することです。",
-        "recentConversationContext は current thread のコンパクトな要約です。",
-        "policyCards は、clarification, proactive context, repair, boundary clarification の提案に役立つ安定した memory summary です。",
+        "recentConversationContext と policyCards を読み、ユーザー支援候補を提案してください。",
         "JSON のみを返してください。",
       ].join(" "),
       JSON.stringify({
-        instruction: [
-          "recentConversationContext と policyCards を読んでください。",
-          "将来の Work Unit を正当化できる具体的な candidate string だけを返してください。",
-          "clarificationCandidates: 明確化する価値があるユーザーの好み、制約、目標。",
-          "proactiveContextCandidates: 先回りして短く共有する価値がある文脈やリマインド。",
-          "repairCandidates: 修復したほうがよい不一致、矛盾、摩擦。",
-          "boundaryCandidates: 将来のやりとりをきれいにするために明確化したほうがよい区別やスコープ境界。",
-          "clarificationCandidates, proactiveContextCandidates, repairCandidates, boundaryCandidates を string array として厳密に返してください。",
-        ].join(" "),
         recentConversationContext: recentContext,
         policyCards: cards.map((card) => ({
-          title: card.title,
-          appliesWhen: card.appliesWhen,
-          recommendedBehavior: card.recommendedBehavior,
-          avoidBehavior: card.avoidBehavior,
-          distinctionNotes: card.distinctionNotes,
-          confidence: card.confidence,
+          state: card.state,
+          action: card.action,
+          outcome: card.outcome,
         })),
       }),
     );
@@ -347,100 +364,6 @@ class DefaultMemorySystemService implements MemorySystemService {
       createdAtIso: new Date().toISOString(),
     };
   }
-
-  private async applyPolicyDecision(
-    botId: string,
-    episode: EpisodeCase,
-    decision: Awaited<ReturnType<typeof decidePolicyCardUpdate>>,
-    existingCards: PolicyCard[],
-  ): Promise<PolicyCard | null> {
-    if (decision.decision === "merge" && decision.targetPolicyCardId) {
-      const existing = existingCards.find(
-        (card) => card.id === decision.targetPolicyCardId,
-      );
-      if (existing) {
-        const mergedCardBody = await buildMergedPolicyCard(
-          this.llm,
-          existing,
-          episode,
-        );
-        const updatedCard = mergePolicyCardUpdate(
-          existing,
-          mergedCardBody,
-          episode,
-        );
-        await this.repository.upsertPolicyCard(updatedCard);
-        return updatedCard;
-      }
-    }
-
-    if (decision.decision === "split_existing") {
-      await this.repository.savePolicySplitCandidate({
-        id: buildSplitCandidateId(episode.id, decision.targetPolicyCardId),
-        botId,
-        episodeId: episode.id,
-        targetPolicyCardId: decision.targetPolicyCardId,
-        reason: decision.reason,
-        status: "open",
-        createdAtIso: new Date().toISOString(),
-      });
-    }
-
-    const createdCard = await buildPolicyCardFromEpisodes(this.llm, botId, [
-      episode,
-    ]);
-    if (!createdCard) {
-      return null;
-    }
-    await this.repository.upsertPolicyCard(createdCard);
-    return createdCard;
-  }
-
-  private async transitionSplitCandidate(
-    botId: string,
-    candidateId: string,
-    nextStatus: "resolved" | "ignored",
-  ): Promise<PolicySplitCandidate | null> {
-    const existing = await this.repository.fetchPolicySplitCandidateById(
-      botId,
-      candidateId,
-    );
-    if (!existing) {
-      return null;
-    }
-    const updated = transitionPolicySplitCandidate(existing, nextStatus);
-    await this.repository.updatePolicySplitCandidateStatus(
-      botId,
-      candidateId,
-      updated.status,
-    );
-    if (nextStatus === "resolved") {
-      await this.applyResolvedSplitCandidate(botId, updated);
-    }
-    return updated;
-  }
-
-  private async applyResolvedSplitCandidate(
-    botId: string,
-    candidate: PolicySplitCandidate,
-  ): Promise<void> {
-    if (!candidate.targetPolicyCardId) {
-      return;
-    }
-    const [episode, targetCard] = await Promise.all([
-      this.repository.fetchEpisodeById(botId, candidate.episodeId),
-      this.repository.fetchPolicyCardById(botId, candidate.targetPolicyCardId),
-    ]);
-    if (!episode || !targetCard) {
-      return;
-    }
-    const updatedCard = applyResolvedSplitCandidate(
-      targetCard,
-      episode,
-      candidate,
-    );
-    await this.repository.upsertPolicyCard(updatedCard);
-  }
 }
 
 export const createMemorySystemService = (
@@ -449,16 +372,120 @@ export const createMemorySystemService = (
   return new DefaultMemorySystemService(options);
 };
 
-const replaceCard = (
-  cards: PolicyCard[],
-  updated: PolicyCard,
-): PolicyCard[] => {
-  const remaining = cards.filter((card) => card.id !== updated.id);
-  return [updated, ...remaining];
-};
-
 const normalizeCandidateList = (values: string[] | undefined): string[] =>
   (values ?? [])
     .map((value) => value.trim())
     .filter(Boolean)
     .slice(0, 5);
+
+const buildDefaultPolicyFlowPorts = (
+  llm: JsonGeneratingClient,
+  embedText: ((text: string) => Promise<number[]>) | undefined,
+  options: MemorySystemOptions,
+): PolicyCardFlowPorts => {
+  const defaultPorts: PolicyCardFlowPorts = {
+    buildHypothesis: async (episodes) =>
+      buildPolicyHypothesisFromEpisodes(llm, episodes, embedText),
+    searchCards: async (hypothesis, cards, limit) =>
+      rankCardsBySimilarity(hypothesis, cards).slice(0, limit),
+    evaluateEpisodes: async (episodes) => {
+      console.log("[evaluateEpisodes]: call llm");
+      return llm.generateJson<PolicyEvaluation>(
+        [
+          "あなたは policy evaluation judge です。",
+          "Episode 群が 1 つの Policy として一貫しているかを判定してください。",
+          "consistent: このEpisode群は、提示されたstateの具体例であり、提示されたactionの具体的実行であり、outcomeも同じ種類の変化として説明できるか。"
+          "clear: このPolicyは、状態を観測したAgentが、取るべき手順を迷わず選べる記述になっているか。"
+          "JSON のみを返してください。",
+        ].join(" "),
+        JSON.stringify({
+          instruction:
+            "consistent と clear を boolean で返してください。Episode 群が同じ state/action/outcome の具体例なら consistent=true、state から action を迷わず選べるなら clear=true です。",
+          episodes,
+        }),
+      );
+    },
+    evaluateSplit: async (groupA, groupB) => {
+      console.log("[evaluateSplit]: call llm");
+      return llm.generateJson<PolicyEvaluation>(
+        [
+          "あなたは policy split evaluation judge です。",
+          "2 つの Episode 群を別 Policy に分けるべきかを判定してください。",
+          "consistent: このEpisode群は、提示されたstateの具体例であり、提示されたactionの具体的実行であり、outcomeも同じ種類の変化として説明できるか。"
+          "clear: このPolicyは、状態を観測したAgentが、取るべき手順を迷わず選べる記述になっているか。"
+          "JSON のみを返してください。",
+        ].join(" "),
+        JSON.stringify({
+          instruction:
+            "consistent と clear を boolean で返してください。両グループが個別に一貫していて、相互の違いが state/action/outcome で説明できるなら consistent=true、両 Policy が重複せず明確なら clear=true です。",
+          groupA,
+          groupB,
+        }),
+      );
+    },
+    clusterByState: async (episodes, newEpisode) =>
+      buildSimilarityClusters(episodes, newEpisode, "state"),
+    clusterByAction: async (episodes, newEpisode) =>
+      buildSimilarityClusters(episodes, newEpisode, "action"),
+    logger: {
+      debug(step, payload) {
+        console.log(`[policy-flow:${step}]`, payload ?? "");
+      },
+    },
+  };
+
+  return {
+    ...defaultPorts,
+    ...options.policyFlowPorts,
+  };
+};
+
+const rankCardsBySimilarity = (
+  hypothesis: PolicyHypothesis,
+  cards: PolicyCard[],
+): PolicyCard[] =>
+  [...cards].sort(
+    (left, right) =>
+      scoreCardSimilarity(hypothesis, right) -
+      scoreCardSimilarity(hypothesis, left),
+  );
+
+const scoreCardSimilarity = (
+  hypothesis: PolicyHypothesis,
+  card: PolicyCard,
+): number =>
+  tokenOverlap(hypothesis.state, card.state) * 3 +
+  tokenOverlap(hypothesis.action, card.action) * 2 +
+  tokenOverlap(hypothesis.outcome, card.outcome);
+
+const tokenOverlap = (left: string, right: string): number => {
+  const leftTokens = new Set(tokenize(left));
+  const rightTokens = new Set(tokenize(right));
+  let overlap = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+  return overlap;
+};
+
+const tokenize = (value: string): string[] =>
+  value
+    .toLowerCase()
+    .split(/[^a-z0-9\u3040-\u30ff\u3400-\u9fff]+/i)
+    .filter((token) => token.length > 0);
+
+const buildSimilarityClusters = async (
+  episodes: EpisodeCase[],
+  newEpisode: EpisodeCase,
+  field: "state" | "action",
+): Promise<EpisodeCase[][]> => {
+  const clusters = episodes.filter((episode) => {
+    if (episode.id === newEpisode.id) {
+      return true;
+    }
+    return tokenOverlap(episode[field], newEpisode[field]) > 0;
+  });
+  return clusters.length >= 2 ? [clusters] : [];
+};

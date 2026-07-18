@@ -3,47 +3,58 @@ import { buildEpisodeId, ensureTurnRecordId } from "../../domain/identifiers";
 import { JsonGeneratingClient } from "../../infrastructure/ollama/fileCachedClient";
 
 interface ExtractEpisodeResult {
-  stateLabel: string;
-  stateDescription: string;
-  actionLabel: string;
-  actionDescription: string;
-  outcome: string;
-  outcomeAssessment: EpisodeCase["outcomeAssessment"];
-  feedbackSignals: EpisodeCase["feedbackSignals"];
-  policyUpdateNote: string;
+  episodes?: Array<{
+    state: string;
+    action: string;
+    outcome: string;
+  }>;
+  state?: string;
+  action?: string;
+  outcome?: string;
 }
 
 export const extractEpisodeCase = async (
   llm: JsonGeneratingClient,
   record: TurnRecord,
+  embedText?: (text: string) => Promise<number[]>,
 ): Promise<EpisodeCase> => {
+  const episodes = await extractEpisodeCases(llm, record, embedText);
+  if (episodes.length === 0) {
+    throw new Error("extractEpisodeCase produced no episodes");
+  }
+  return episodes[0];
+};
+
+export const extractEpisodeCases = async (
+  llm: JsonGeneratingClient,
+  record: TurnRecord,
+  embedText?: (text: string) => Promise<number[]>,
+): Promise<EpisodeCase[]> => {
   const normalizedRecord = ensureTurnRecordId(record);
-  return extractEpisodeCaseFromConversationSource(
+  return extractEpisodeCasesFromConversationSource(
     llm,
     {
       botId: normalizedRecord.botId,
       threadId: normalizedRecord.threadId,
-      id: buildEpisodeId(
-        normalizedRecord.botId,
-        normalizedRecord.threadId,
-        normalizedRecord.id,
-      ),
+      source: normalizedRecord.id,
     },
     normalizedRecord,
+    embedText,
   );
 };
 
-export const extractEpisodeCaseFromChunk = async (
+export const extractEpisodeCasesFromChunk = async (
   llm: JsonGeneratingClient,
   chunk: ConversationChunk,
-): Promise<EpisodeCase> => {
-  return extractEpisodeCaseFromConversationSource(
+  embedText?: (text: string) => Promise<number[]>,
+): Promise<EpisodeCase[]> => {
+  return extractEpisodeCasesFromConversationSource(
     llm,
     {
       botId: chunk.botId,
       threadId: chunk.threadId,
+      source: chunk.id,
       sourceChunkId: chunk.id,
-      id: buildEpisodeId(chunk.botId, chunk.threadId, chunk.id),
     },
     {
       chunkText: chunk.chunkText,
@@ -53,156 +64,76 @@ export const extractEpisodeCaseFromChunk = async (
       turnCount: chunk.turnCount,
       tokenEstimate: chunk.tokenEstimate,
     },
+    embedText,
   );
 };
 
-const extractEpisodeCaseFromConversationSource = async (
+const extractEpisodeCasesFromConversationSource = async (
   llm: JsonGeneratingClient,
-  identity: Pick<EpisodeCase, "botId" | "threadId" | "id"> & {
+  identity: {
+    botId: string;
+    threadId: string;
+    source: string;
     sourceChunkId?: string;
   },
   conversation: TurnRecord | Record<string, unknown>,
-): Promise<EpisodeCase> => {
-  const systemPrompt = [
-    "あなたは conversation memory 用の episode extractor です。",
-    "会話から、コンパクトな state-action-outcome case を 1 つ抽出してください。",
-    "JSON のみを返してください。",
-  ].join(" ");
-  const userPrompt = JSON.stringify({
-    instruction:
-      "stateLabel, stateDescription, actionLabel, actionDescription, outcome, outcomeAssessment(overall, score, naturalLanguageJudgement, updateHint), feedbackSignals, policyUpdateNote を抽出してください。",
-    conversation,
-  });
-
+  embedText?: (text: string) => Promise<number[]>,
+): Promise<EpisodeCase[]> => {
   const parsed = await llm.generateJson<ExtractEpisodeResult>(
-    systemPrompt,
-    userPrompt,
+    [
+      "あなたは conversation memory 用の episode extractor です。",
+      "会話から、PolicyCard を作るための具体的な Episode を 1 件以上抽出してください。",
+      "JSON のみを返してください。",
+    ].join(" "),
+    JSON.stringify({
+      instruction:
+        "episodes を返してください。各 episode は state, action, outcome を持ち、会話内で実際に起きた具体例だけを書いてください。",
+      conversation,
+    }),
   );
-  return {
-    id: identity.id,
-    botId: identity.botId,
-    threadId: identity.threadId,
-    ...(identity.sourceChunkId
-      ? { sourceChunkId: identity.sourceChunkId }
-      : {}),
-    stateLabel: requireText(parsed.stateLabel, "stateLabel"),
-    stateDescription: requireText(parsed.stateDescription, "stateDescription"),
-    actionLabel: requireText(parsed.actionLabel, "actionLabel"),
-    actionDescription: requireText(
-      parsed.actionDescription,
-      "actionDescription",
-    ),
-    outcome: requireText(parsed.outcome, "outcome"),
-    outcomeAssessment: normalizeOutcomeAssessment(
-      parsed.outcomeAssessment,
-      parsed.outcome,
-    ),
-    feedbackSignals: normalizeFeedbackSignals(parsed.feedbackSignals),
-    policyUpdateNote: requireText(parsed.policyUpdateNote, "policyUpdateNote"),
-    createdAtIso: new Date().toISOString(),
-  };
+
+  const rawEpisodes =
+    parsed.episodes && parsed.episodes.length > 0
+      ? parsed.episodes
+      : parsed.state && parsed.action && parsed.outcome
+        ? [parsed as Required<Pick<ExtractEpisodeResult, "state" | "action" | "outcome">>]
+        : [];
+
+  return Promise.all(
+    rawEpisodes.map(async (episode, index) => {
+      const state = requireText(episode.state, "state");
+      const action = requireText(episode.action, "action");
+      const outcome = requireText(episode.outcome, "outcome");
+      const [stateEmbeddingVector, actionEmbeddingVector, outcomeEmbeddingVector] =
+        embedText
+          ? await Promise.all([
+              embedText(state),
+              embedText(action),
+              embedText(outcome),
+            ])
+          : [[], [], []];
+
+      return {
+        id: buildEpisodeId(identity.botId, identity.threadId, identity.source, index),
+        botId: identity.botId,
+        threadId: identity.threadId,
+        ...(identity.sourceChunkId ? { sourceChunkId: identity.sourceChunkId } : {}),
+        state,
+        action,
+        outcome,
+        stateEmbeddingVector,
+        actionEmbeddingVector,
+        outcomeEmbeddingVector,
+        createdAtIso: new Date().toISOString(),
+      };
+    }),
+  );
 };
 
-const requireText = (value: string, fieldName: string): string => {
+const requireText = (value: string | undefined, fieldName: string): string => {
   const normalized = value?.trim();
   if (!normalized) {
-    throw new Error(`extractEpisodeCase returned empty ${fieldName}`);
+    throw new Error(`extractEpisodeCases returned empty ${fieldName}`);
   }
   return normalized;
-};
-
-const FEEDBACK_TYPES = new Set<EpisodeCase["feedbackSignals"][number]["type"]>([
-  "explicit_positive",
-  "explicit_negative",
-  "correction",
-  "distinction_request",
-  "preference",
-  "curiosity",
-  "achievement",
-  "confusion",
-  "friction",
-  "continuation",
-]);
-
-const FEEDBACK_STRENGTHS = new Set<
-  EpisodeCase["feedbackSignals"][number]["strength"]
->(["low", "medium", "high"]);
-
-const FEEDBACK_TARGETS = new Set<
-  EpisodeCase["feedbackSignals"][number]["target"]
->(["state", "action", "policy", "distinction", "unknown"]);
-
-const UPDATE_HINTS = new Set<
-  EpisodeCase["feedbackSignals"][number]["updateHint"]
->([
-  "strengthen",
-  "weaken",
-  "split",
-  "merge",
-  "avoid",
-  "create_new",
-  "no_change",
-]);
-
-const OUTCOME_OVERALLS = new Set<EpisodeCase["outcomeAssessment"]["overall"]>([
-  "positive",
-  "mixed",
-  "negative",
-  "uncertain",
-]);
-
-const OUTCOME_SCORES = new Set<EpisodeCase["outcomeAssessment"]["score"]>([
-  -2, -1, 0, 1, 2,
-]);
-
-const normalizeFeedbackSignals = (
-  signals: EpisodeCase["feedbackSignals"] | undefined,
-): EpisodeCase["feedbackSignals"] => {
-  return (signals ?? []).flatMap((signal) => {
-    const text = signal?.text?.trim();
-    if (!text) {
-      return [];
-    }
-    return [
-      {
-        type: FEEDBACK_TYPES.has(signal.type) ? signal.type : "correction",
-        text,
-        strength: FEEDBACK_STRENGTHS.has(signal.strength)
-          ? signal.strength
-          : "medium",
-        target: FEEDBACK_TARGETS.has(signal.target) ? signal.target : "unknown",
-        updateHint: UPDATE_HINTS.has(signal.updateHint)
-          ? signal.updateHint
-          : "no_change",
-      },
-    ];
-  });
-};
-
-const normalizeOutcomeAssessment = (
-  value: EpisodeCase["outcomeAssessment"] | undefined,
-  fallbackOutcome: string | undefined,
-): EpisodeCase["outcomeAssessment"] => {
-  const naturalLanguageJudgement =
-    value?.naturalLanguageJudgement?.trim() || fallbackOutcome?.trim();
-  if (!naturalLanguageJudgement) {
-    throw new Error(
-      "extractEpisodeCase returned empty outcomeAssessment.naturalLanguageJudgement and outcome",
-    );
-  }
-  return {
-    overall:
-      value?.overall && OUTCOME_OVERALLS.has(value.overall)
-        ? value.overall
-        : "uncertain",
-    score:
-      typeof value?.score === "number" && OUTCOME_SCORES.has(value.score)
-        ? value.score
-        : 0,
-    naturalLanguageJudgement,
-    updateHint:
-      value?.updateHint && UPDATE_HINTS.has(value.updateHint)
-        ? value.updateHint
-        : "no_change",
-  };
 };
