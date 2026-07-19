@@ -1,6 +1,7 @@
 import { ConversationChunk, EpisodeCase, TurnRecord } from "../../domain/types";
 import { buildEpisodeId, ensureTurnRecordId } from "../../domain/identifiers";
 import { JsonGeneratingClient } from "../../infrastructure/ollama/fileCachedClient";
+import { conversationChunkForLlm, turnRecordForLlm } from "./llmPayloads";
 
 interface ExtractEpisodeResult {
   episodes?: Array<{
@@ -38,7 +39,7 @@ export const extractEpisodeCases = async (
       threadId: normalizedRecord.threadId,
       source: normalizedRecord.id,
     },
-    normalizedRecord,
+    turnRecordForLlm(normalizedRecord),
     embedText,
   );
 };
@@ -56,14 +57,7 @@ export const extractEpisodeCasesFromChunk = async (
       source: chunk.id,
       sourceChunkId: chunk.id,
     },
-    {
-      chunkText: chunk.chunkText,
-      turnRecordIds: chunk.turnRecordIds,
-      startCreatedAtIso: chunk.startCreatedAtIso,
-      endCreatedAtIso: chunk.endCreatedAtIso,
-      turnCount: chunk.turnCount,
-      tokenEstimate: chunk.tokenEstimate,
-    },
+    conversationChunkForLlm(chunk),
     embedText,
   );
 };

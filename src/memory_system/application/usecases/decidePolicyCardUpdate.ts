@@ -1,5 +1,6 @@
 import { EpisodeCase, PolicyCard } from "../../domain/types";
 import { JsonGeneratingClient } from "../../infrastructure/ollama/fileCachedClient";
+import { episodeForLlm, policyCardsForLlm } from "./llmPayloads";
 
 export interface PolicyUpdateDecision {
   decision: "merge" | "create_new" | "split_existing" | "unassigned";
@@ -32,8 +33,8 @@ export const decidePolicyCardUpdate = async (
       "JSON のみを返してください。",
     ].join(" "),
     JSON.stringify({
-      episode,
-      existingPolicyCards: existingCards,
+      episode: episodeForLlm(episode),
+      existingPolicyCards: policyCardsForLlm(existingCards),
     }),
   );
 

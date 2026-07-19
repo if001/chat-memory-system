@@ -1,5 +1,6 @@
 import { PolicyCard } from "../../domain/types";
 import { JsonGeneratingClient } from "../../infrastructure/ollama/fileCachedClient";
+import { policyCardsForLlm } from "./llmPayloads";
 
 export const filterApplicablePolicyCards = async (
   llm: JsonGeneratingClient,
@@ -16,15 +17,10 @@ export const filterApplicablePolicyCards = async (
     "JSON のみを返してください。",
   ].join(" ");
 
-  console.log("[filterApplicablePolicyCards]: cards", cards);
+  console.log("[filterApplicablePolicyCards]: cards.len", cards.length);
   const userPrompt = JSON.stringify({
     currentContext,
-    policyCards: cards.map((c) => ({
-      id: c.id,
-      state: c.state,
-      action: c.action,
-      outcome: c.outcome,
-    })),
+    policyCards: policyCardsForLlm(cards),
   });
   const parsed = await llm.generateJson<string[]>(
     systemPrompt,

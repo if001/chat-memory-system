@@ -22,6 +22,7 @@ import {
 import { buildPolicyQueryContext } from "../application/usecases/buildPolicyQueryContext";
 import { extractEpisodeCasesFromChunk } from "../application/usecases/extractEpisodeCase";
 import { filterApplicablePolicyCards } from "../application/usecases/filterApplicablePolicyCards";
+import { episodesForLlm } from "../application/usecases/llmPayloads";
 import { OllamaEmbeddingClient } from "../infrastructure/ollama/embeddingClient";
 import { OllamaClient } from "../infrastructure/ollama/client";
 import {
@@ -418,7 +419,7 @@ const buildDefaultPolicyFlowPorts = (
           JSON.stringify({
             instruction:
               "consistent と clear を boolean で返してください。Episode 群が同じ state/action/outcome の具体例なら consistent=true、state から action を迷わず選べるなら clear=true です。",
-            episodes,
+            episodes: episodesForLlm(episodes),
           }),
         ),
       );
@@ -437,8 +438,8 @@ const buildDefaultPolicyFlowPorts = (
           JSON.stringify({
             instruction:
               "consistent と clear を boolean で返してください。両グループが個別に一貫していて、相互の違いが state/action/outcome で説明できるなら consistent=true、両 Policy が重複せず明確なら clear=true です。",
-            groupA,
-            groupB,
+            groupA: episodesForLlm(groupA),
+            groupB: episodesForLlm(groupB),
           }),
         ),
       );

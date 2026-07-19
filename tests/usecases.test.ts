@@ -6,6 +6,7 @@ import {
   normalizeChunkingConfig,
 } from "../src/memory_system/application/usecases/buildConversationChunks";
 import { buildPolicyQueryContext } from "../src/memory_system/application/usecases/buildPolicyQueryContext";
+import { decidePolicyCardUpdate } from "../src/memory_system/application/usecases/decidePolicyCardUpdate";
 import { extractEpisodeCasesFromChunk } from "../src/memory_system/application/usecases/extractEpisodeCase";
 import { filterApplicablePolicyCards } from "../src/memory_system/application/usecases/filterApplicablePolicyCards";
 import { mergePolicyCardUpdate } from "../src/memory_system/application/usecases/mergePolicyCardUpdate";
@@ -25,9 +26,12 @@ import {
 } from "../src/memory_system/domain/types";
 
 class JsonClientStub {
+  readonly calls: Array<{ systemPrompt?: string; userPrompt?: string }> = [];
+
   constructor(private readonly queue: unknown[]) {}
 
-  async generateJson<T>(): Promise<T> {
+  async generateJson<T>(systemPrompt?: string, userPrompt?: string): Promise<T> {
+    this.calls.push({ systemPrompt, userPrompt });
     if (this.queue.length === 0) {
       throw new Error("stub queue is empty");
     }
@@ -254,6 +258,80 @@ test("buildPolicyHypothesisFromEpisodes fills embeddings when embedder is provid
   assert.deepEqual(result.stateEmbeddingVector, ["State text".length]);
   assert.deepEqual(result.actionEmbeddingVector, ["Action text".length]);
   assert.deepEqual(result.outcomeEmbeddingVector, ["Outcome text".length]);
+});
+
+test("buildPolicyHypothesisFromEpisodes sends only episode text fields to llm", async () => {
+  const llm = new JsonClientStub([
+    {
+      state: "Shared state",
+      action: "Shared action",
+      outcome: "Shared outcome",
+    },
+  ]);
+
+  await buildPolicyHypothesisFromEpisodes(llm, [
+    buildEpisode("ep-1", {
+      stateEmbeddingVector: [1, 2, 3],
+      actionEmbeddingVector: [4, 5, 6],
+      outcomeEmbeddingVector: [7, 8, 9],
+      relatedCardId: "pc-1",
+    }),
+  ]);
+
+  const payload = JSON.parse(llm.calls[0]?.userPrompt ?? "{}") as {
+    episodes: unknown[];
+  };
+  assert.deepEqual(payload.episodes, [
+    {
+      state: "state-ep-1",
+      action: "action-ep-1",
+      outcome: "outcome-ep-1",
+    },
+  ]);
+});
+
+test("decidePolicyCardUpdate sends only decision fields to llm", async () => {
+  const llm = new JsonClientStub([
+    {
+      decision: "merge",
+      reason: "Same behavior",
+      targetPolicyCardId: "pc-1",
+    },
+  ]);
+
+  await decidePolicyCardUpdate(
+    llm,
+    buildEpisode("ep-1", {
+      stateEmbeddingVector: [1],
+      actionEmbeddingVector: [2],
+      outcomeEmbeddingVector: [3],
+    }),
+    [
+      buildCard("pc-1", ["ep-older"], {
+        stateEmbeddingVector: [4],
+        actionEmbeddingVector: [5],
+        outcomeEmbeddingVector: [6],
+      }),
+    ],
+  );
+
+  const payload = JSON.parse(llm.calls[0]?.userPrompt ?? "{}") as {
+    episode: unknown;
+    existingPolicyCards: unknown[];
+  };
+  assert.deepEqual(payload.episode, {
+    state: "state-ep-1",
+    action: "action-ep-1",
+    outcome: "outcome-ep-1",
+  });
+  assert.deepEqual(payload.existingPolicyCards, [
+    {
+      id: "pc-1",
+      state: "card-state-pc-1",
+      action: "card-action-pc-1",
+      outcome: "card-outcome-pc-1",
+    },
+  ]);
 });
 
 test("filterApplicablePolicyCards selects ids returned by the model", async () => {

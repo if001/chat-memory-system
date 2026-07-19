@@ -1,5 +1,6 @@
 import { EpisodeCase, PolicyHypothesis } from "../../domain/types";
 import { JsonGeneratingClient } from "../../infrastructure/ollama/fileCachedClient";
+import { episodesForLlm } from "./llmPayloads";
 
 interface BuildPolicyHypothesisResult {
   state: string;
@@ -28,7 +29,7 @@ export const buildPolicyHypothesisFromEpisodes = async (
     JSON.stringify({
       instruction:
         "state, action, outcome を返してください。Episode の共通構造を抽象化し、手順として使える粒度にしてください。",
-      episodes,
+      episodes: episodesForLlm(episodes),
     }),
   );
 
