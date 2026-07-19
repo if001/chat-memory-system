@@ -29,8 +29,8 @@ export const createMemoryBackgroundRunner = (
   const pollMs = options.pollMs ?? 5_000;
   const threadLimit = options.threadLimit ?? 50;
   const turnLimitPerThread = options.turnLimitPerThread ?? 200;
-  const episodeLimit = options.episodeLimit ?? 50;
-  const policyLimit = options.policyLimit ?? 50;
+  const episodeLimit = options.episodeLimit ?? 20;
+  const policyLimit = options.policyLimit ?? 20;
 
   let timer: NodeJS.Timeout | null = null;
   let running = false;

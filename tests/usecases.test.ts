@@ -13,6 +13,7 @@ import {
   applyEpisodeToPolicyCardFlow,
   createPolicyCardFlowCache,
   PolicyCardFlowPorts,
+  PolicyFlowRecoverableError,
 } from "../src/memory_system/application/usecases/policyCardFlow";
 import {
   ConversationChunk,
@@ -445,4 +446,35 @@ test("policyCardFlow prunes supersets after a failed eval", async () => {
   assert.equal(calls, 1);
   assert.equal(result.stats.episodeEvalCalls, 1);
   assert.equal(result.stats.cacheHits, 1);
+});
+
+test("policyCardFlow returns unassigned on recoverable llm error", async () => {
+  const incoming = buildEpisode("ep-new");
+  const ports: PolicyCardFlowPorts = {
+    buildHypothesis: async () => {
+      throw new PolicyFlowRecoverableError("llm failed");
+    },
+    searchCards: async () => [],
+    evaluateEpisodes: async () => ({ consistent: true, clear: true }),
+    evaluateSplit: async () => ({ consistent: true, clear: true }),
+    clusterByState: async () => [],
+    clusterByAction: async () => [],
+  };
+
+  const result = await applyEpisodeToPolicyCardFlow({
+    botId: "ao",
+    newEpisode: incoming,
+    existingCards: [],
+    episodesByCardId: new Map(),
+    unassignedEpisodes: [],
+    searchLimit: 3,
+    ports,
+  });
+
+  assert.equal(result.outcome, "unassigned");
+  assert.deepEqual(result.updatedCards, []);
+  assert.deepEqual(result.assignedEpisodeIds, []);
+  if (result.outcome === "unassigned") {
+    assert.equal(result.recoverableError, true);
+  }
 });

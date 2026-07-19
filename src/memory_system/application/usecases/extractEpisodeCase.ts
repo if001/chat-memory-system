@@ -82,7 +82,11 @@ const extractEpisodeCasesFromConversationSource = async (
   const parsed = await llm.generateJson<ExtractEpisodeResult>(
     [
       "あなたは conversation memory 用の episode extractor です。",
-      "会話から、PolicyCard を作るための具体的な Episode を 1 件以上抽出してください。",
+      "会話から、Episode を 1件もしくは1件以上抽出してください。",
+      "Episodeは具体的な事実を客観的にまとめ、state, action, outcomeの形式としてください。",
+      "stateはAgentの行動選択に必要な、ユーザー・会話・タスクの状況と目的。",
+      "actionはAgentの行動(応答)",
+      "outcomeはユーザーの行動(応答)",
       "JSON のみを返してください。",
     ].join(" "),
     JSON.stringify({
@@ -96,7 +100,11 @@ const extractEpisodeCasesFromConversationSource = async (
     parsed.episodes && parsed.episodes.length > 0
       ? parsed.episodes
       : parsed.state && parsed.action && parsed.outcome
-        ? [parsed as Required<Pick<ExtractEpisodeResult, "state" | "action" | "outcome">>]
+        ? [
+            parsed as Required<
+              Pick<ExtractEpisodeResult, "state" | "action" | "outcome">
+            >,
+          ]
         : [];
 
   return Promise.all(
@@ -104,20 +112,30 @@ const extractEpisodeCasesFromConversationSource = async (
       const state = requireText(episode.state, "state");
       const action = requireText(episode.action, "action");
       const outcome = requireText(episode.outcome, "outcome");
-      const [stateEmbeddingVector, actionEmbeddingVector, outcomeEmbeddingVector] =
-        embedText
-          ? await Promise.all([
-              embedText(state),
-              embedText(action),
-              embedText(outcome),
-            ])
-          : [[], [], []];
+      const [
+        stateEmbeddingVector,
+        actionEmbeddingVector,
+        outcomeEmbeddingVector,
+      ] = embedText
+        ? await Promise.all([
+            embedText(state),
+            embedText(action),
+            embedText(outcome),
+          ])
+        : [[], [], []];
 
       return {
-        id: buildEpisodeId(identity.botId, identity.threadId, identity.source, index),
+        id: buildEpisodeId(
+          identity.botId,
+          identity.threadId,
+          identity.source,
+          index,
+        ),
         botId: identity.botId,
         threadId: identity.threadId,
-        ...(identity.sourceChunkId ? { sourceChunkId: identity.sourceChunkId } : {}),
+        ...(identity.sourceChunkId
+          ? { sourceChunkId: identity.sourceChunkId }
+          : {}),
         state,
         action,
         outcome,

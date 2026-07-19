@@ -13,6 +13,7 @@ import {
   applyEpisodeToPolicyCardFlow,
   createPolicyCardFlowCache,
   PolicyCardFlowPorts,
+  PolicyFlowRecoverableError,
 } from "../application/usecases/policyCardFlow";
 import {
   buildConversationChunks,
@@ -218,6 +219,7 @@ class DefaultMemorySystemService implements MemorySystemService {
 
     const updatedCards: PolicyCard[] = [];
     const cache = createPolicyCardFlowCache();
+    const deferredEpisodeIds = new Set<string>();
     console.log("[buildOrUpdatePolicyCards]: episodes.len=", episodes.length);
     for (const episode of episodes) {
       const existingCards = await this.repository.fetchPolicyCards(botId, 100);
@@ -236,7 +238,10 @@ class DefaultMemorySystemService implements MemorySystemService {
       }
       const unassignedEpisodes = (
         await this.repository.fetchUnassignedEpisodes(botId, 200)
-      ).filter((candidate) => candidate.id !== episode.id);
+      ).filter(
+        (candidate) =>
+          candidate.id !== episode.id && !deferredEpisodeIds.has(candidate.id),
+      );
 
       const result = await applyEpisodeToPolicyCardFlow({
         botId,
@@ -248,6 +253,9 @@ class DefaultMemorySystemService implements MemorySystemService {
         ports: this.policyFlowPorts,
         cache,
       });
+      console.log(
+        "[buildOrUpdatePolicyCards]: applyEpisodeToPolicyCardFlow done",
+      );
 
       for (const card of result.updatedCards) {
         await this.repository.upsertPolicyCard(card);
@@ -280,7 +288,13 @@ class DefaultMemorySystemService implements MemorySystemService {
         ]);
       }
 
+      if (result.outcome === "unassigned" && result.recoverableError) {
+        deferredEpisodeIds.add(episode.id);
+      }
+
       await this.repository.markEpisodeProcessed(episode.id);
+      console.log("[buildOrUpdatePolicyCards]: done...");
+      return;
     }
     console.log("[buildOrUpdatePolicyCards]: done");
     return updatedCards;
@@ -385,42 +399,48 @@ const buildDefaultPolicyFlowPorts = (
 ): PolicyCardFlowPorts => {
   const defaultPorts: PolicyCardFlowPorts = {
     buildHypothesis: async (episodes) =>
-      buildPolicyHypothesisFromEpisodes(llm, episodes, embedText),
+      wrapRecoverable("buildHypothesis", () =>
+        buildPolicyHypothesisFromEpisodes(llm, episodes, embedText),
+      ),
     searchCards: async (hypothesis, cards, limit) =>
       rankCardsBySimilarity(hypothesis, cards).slice(0, limit),
     evaluateEpisodes: async (episodes) => {
       console.log("[evaluateEpisodes]: call llm");
-      return llm.generateJson<PolicyEvaluation>(
-        [
-          "あなたは policy evaluation judge です。",
-          "Episode 群が 1 つの Policy として一貫しているかを判定してください。",
-          "consistent: このEpisode群は、提示されたstateの具体例であり、提示されたactionの具体的実行であり、outcomeも同じ種類の変化として説明できるか。"
-          "clear: このPolicyは、状態を観測したAgentが、取るべき手順を迷わず選べる記述になっているか。"
-          "JSON のみを返してください。",
-        ].join(" "),
-        JSON.stringify({
-          instruction:
-            "consistent と clear を boolean で返してください。Episode 群が同じ state/action/outcome の具体例なら consistent=true、state から action を迷わず選べるなら clear=true です。",
-          episodes,
-        }),
+      return wrapRecoverable("evaluateEpisodes", () =>
+        llm.generateJson<PolicyEvaluation>(
+          [
+            "あなたは policy evaluation judge です。",
+            "Episode 群が 1 つの Policy として一貫しているかを判定してください。",
+            "consistent: このEpisode群は、提示されたstateの具体例であり、提示されたactionの具体的実行であり、outcomeも同じ種類の変化として説明できるか。",
+            "clear: このPolicyは、状態を観測したAgentが、取るべき手順を迷わず選べる記述になっているか。",
+            "JSON のみを返してください。",
+          ].join(" "),
+          JSON.stringify({
+            instruction:
+              "consistent と clear を boolean で返してください。Episode 群が同じ state/action/outcome の具体例なら consistent=true、state から action を迷わず選べるなら clear=true です。",
+            episodes,
+          }),
+        ),
       );
     },
     evaluateSplit: async (groupA, groupB) => {
       console.log("[evaluateSplit]: call llm");
-      return llm.generateJson<PolicyEvaluation>(
-        [
-          "あなたは policy split evaluation judge です。",
-          "2 つの Episode 群を別 Policy に分けるべきかを判定してください。",
-          "consistent: このEpisode群は、提示されたstateの具体例であり、提示されたactionの具体的実行であり、outcomeも同じ種類の変化として説明できるか。"
-          "clear: このPolicyは、状態を観測したAgentが、取るべき手順を迷わず選べる記述になっているか。"
-          "JSON のみを返してください。",
-        ].join(" "),
-        JSON.stringify({
-          instruction:
-            "consistent と clear を boolean で返してください。両グループが個別に一貫していて、相互の違いが state/action/outcome で説明できるなら consistent=true、両 Policy が重複せず明確なら clear=true です。",
-          groupA,
-          groupB,
-        }),
+      return wrapRecoverable("evaluateSplit", () =>
+        llm.generateJson<PolicyEvaluation>(
+          [
+            "あなたは policy split evaluation judge です。",
+            "2 つの Episode 群を別 Policy に分けるべきかを判定してください。",
+            "consistent: このEpisode群は、提示されたstateの具体例であり、提示されたactionの具体的実行であり、outcomeも同じ種類の変化として説明できるか。",
+            "clear: このPolicyは、状態を観測したAgentが、取るべき手順を迷わず選べる記述になっているか。",
+            "JSON のみを返してください。",
+          ].join(" "),
+          JSON.stringify({
+            instruction:
+              "consistent と clear を boolean で返してください。両グループが個別に一貫していて、相互の違いが state/action/outcome で説明できるなら consistent=true、両 Policy が重複せず明確なら clear=true です。",
+            groupA,
+            groupB,
+          }),
+        ),
       );
     },
     clusterByState: async (episodes, newEpisode) =>
@@ -438,6 +458,20 @@ const buildDefaultPolicyFlowPorts = (
     ...defaultPorts,
     ...options.policyFlowPorts,
   };
+};
+
+const wrapRecoverable = async <T>(
+  label: string,
+  run: () => Promise<T>,
+): Promise<T> => {
+  try {
+    return await run();
+  } catch (error) {
+    throw new PolicyFlowRecoverableError(
+      `llm call failed during ${label}`,
+      error,
+    );
+  }
 };
 
 const rankCardsBySimilarity = (

@@ -12,10 +12,9 @@ import {
 } from "../src/memory_system/domain/types";
 import { MemoryRepository } from "../src/memory_system/infrastructure/postgres/repository";
 
-const postgresUrl =
-  process.env.MEMORY_SYSTEM_TEST_POSTGRES_URL ?? process.env.POSTGRES_URL;
+const postgresUrl = process.env.MEMORY_SYSTEM_TEST_POSTGRES_URL;
 
-const integrationTest = test;
+const integrationTest = postgresUrl ? test : test.skip;
 integrationTest(
   "repository persists episodes and policy cards with the new schema",
   async () => {

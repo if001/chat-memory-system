@@ -19,7 +19,10 @@ export const buildPolicyHypothesisFromEpisodes = async (
   const parsed = await llm.generateJson<BuildPolicyHypothesisResult>(
     [
       "あなたは policy hypothesis builder です。",
-      "Episode 群から、抽象的な state/action/outcome を 1 つ抽出してください。",
+      "Episode 群は、具体的で客観的な事実です。これらからを抽象化してまとめてください。",
+      "stateはAgentの行動選択に必要な、ユーザー・会話・タスクの状況と目的。",
+      "actionはAgentの行動(応答)",
+      "outcomeはユーザーの行動(応答)",
       "JSON のみを返してください。",
     ].join(" "),
     JSON.stringify({

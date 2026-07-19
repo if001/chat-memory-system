@@ -4,6 +4,7 @@ import {
   createMemorySystemService,
   MemorySystemService,
 } from "../src/memory_system/api/service";
+import { PolicyFlowRecoverableError } from "../src/memory_system/application/usecases/policyCardFlow";
 import {
   ConversationChunk,
   EpisodeCase,
@@ -281,6 +282,76 @@ test("generateRelationshipInsightReport returns normalized candidates", async ()
   assert.equal(report.proactiveContextCandidates.length, 1);
   assert.equal(report.repairCandidates.length, 1);
   assert.equal(report.boundaryCandidates.length, 1);
+});
+
+test("buildOrUpdatePolicyCards leaves failed episode unassigned and continues", async () => {
+  const processedEpisodeIds: string[] = [];
+  const updatedAssignments: Array<{ episodeIds: string[]; relatedCardId?: string }> = [];
+  const upsertedCards: PolicyCard[] = [];
+  const first = buildEpisode("ep-failed");
+  const supporting = buildEpisode("ep-support", {
+    state: "User asks for rollout guidance.",
+    action: "Assistant suggests deployment steps.",
+    outcome: "A rollout path is available.",
+  });
+  const second = buildEpisode("ep-created", {
+    state: "User asks for rollout guidance.",
+    action: "Assistant suggests deployment steps.",
+    outcome: "A rollout path is validated.",
+  });
+  let buildHypothesisCalls = 0;
+
+  const service = createStubbedService(
+    {
+      fetchPendingEpisodes: async () => [first, second],
+      fetchPolicyCards: async () => [],
+      fetchEpisodesByIds: async () => [],
+      fetchUnassignedEpisodes: async () => [first, supporting, second],
+      upsertPolicyCard: async (card) => {
+        upsertedCards.push(card);
+      },
+      updateEpisodeRelatedCard: async (_botId, episodeIds, relatedCardId) => {
+        updatedAssignments.push({ episodeIds, relatedCardId });
+      },
+      markEpisodeProcessed: async (episodeId) => {
+        processedEpisodeIds.push(episodeId);
+      },
+    },
+    [],
+    {
+      buildHypothesis: async (episodes) => {
+        buildHypothesisCalls += 1;
+        if (episodes.some((episode) => episode.id === "ep-failed")) {
+          throw new PolicyFlowRecoverableError("llm failed");
+        }
+        return {
+          state: "User needs rollout guidance.",
+          action: "Assistant suggests deployment steps.",
+          outcome: "A rollout policy is formed.",
+          stateEmbeddingVector: [],
+          actionEmbeddingVector: [],
+          outcomeEmbeddingVector: [],
+          relatedEpisodeIds: episodes.map((episode) => episode.id),
+        };
+      },
+      searchCards: async () => [],
+      evaluateEpisodes: async () => ({ consistent: true, clear: true }),
+      evaluateSplit: async () => ({ consistent: false, clear: false }),
+      clusterByState: async (episodes) =>
+        episodes.some((episode) => episode.id === "ep-created") ? [episodes] : [],
+      clusterByAction: async (episodes) =>
+        episodes.some((episode) => episode.id === "ep-created") ? [episodes] : [],
+    },
+  );
+
+  const cards = await service.buildOrUpdatePolicyCards("ao", 10);
+
+  assert.equal(cards.length, 1);
+  assert.equal(upsertedCards.length, 1);
+  assert.deepEqual(processedEpisodeIds, ["ep-failed", "ep-created"]);
+  assert.equal(updatedAssignments.length, 1);
+  assert.deepEqual(updatedAssignments[0]?.episodeIds.sort(), ["ep-created", "ep-support"]);
+  assert.ok(buildHypothesisCalls >= 2);
 });
 
 const createStubbedService = (

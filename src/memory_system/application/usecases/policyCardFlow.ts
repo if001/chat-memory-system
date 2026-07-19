@@ -10,6 +10,16 @@ export interface PolicyFlowLogger {
   debug(step: string, payload?: unknown): void;
 }
 
+export class PolicyFlowRecoverableError extends Error {
+  constructor(
+    message: string,
+    readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = "PolicyFlowRecoverableError";
+  }
+}
+
 export interface PolicyCardFlowPorts {
   buildHypothesis(episodes: EpisodeCase[]): Promise<PolicyHypothesis>;
   searchCards(
@@ -74,6 +84,7 @@ export type PolicyCardFlowResult =
       outcome: "unassigned";
       updatedCards: [];
       assignedEpisodeIds: [];
+      recoverableError?: boolean;
       stats: PolicyCardFlowStats;
     };
 
@@ -98,18 +109,30 @@ export const applyEpisodeToPolicyCardFlow = async (
   let splitEvalCalls = 0;
   const log = (step: string, payload?: unknown): void => {
     input.ports.logger?.debug(step, payload);
-    console.log(`[policy-flow] ${step}`, payload ?? "");
+    // console.log(`[policy-flow] ${step}`, payload ?? "");
   };
 
   log("step1:new-episode", { episodeId: input.newEpisode.id });
-  const baseHypothesis = await input.ports.buildHypothesis([input.newEpisode]);
+  const baseHypothesis = await recoverable(
+    input,
+    "step2:build-base-hypothesis",
+    () => input.ports.buildHypothesis([input.newEpisode]),
+  );
+  if (!baseHypothesis) {
+    return buildUnassignedResult(cache, episodeEvalCalls, splitEvalCalls, true);
+  }
 
   log("step3:search-cards", { limit: input.searchLimit });
-  const candidateCards = await input.ports.searchCards(
-    baseHypothesis,
-    input.existingCards,
-    input.searchLimit,
+  const candidateCards = await recoverable(input, "step3:search-cards", () =>
+    input.ports.searchCards(
+      baseHypothesis,
+      input.existingCards,
+      input.searchLimit,
+    ),
   );
+  if (!candidateCards) {
+    return buildUnassignedResult(cache, episodeEvalCalls, splitEvalCalls, true);
+  }
   log("step3: candidateCards", { cards: candidateCards.length });
   for (const card of candidateCards) {
     const episodes = [
@@ -117,10 +140,23 @@ export const applyEpisodeToPolicyCardFlow = async (
       input.newEpisode,
     ];
     log("step3: episodes", { episodes: episodes.length });
-    const evaluation = await evaluateEpisodeSet(episodes, cache, async () => {
-      episodeEvalCalls += 1;
-      return input.ports.evaluateEpisodes(episodes);
-    });
+    const evaluation = await recoverable(
+      input,
+      "step5:evaluate-merge-candidate",
+      () =>
+        evaluateEpisodeSet(episodes, cache, async () => {
+          episodeEvalCalls += 1;
+          return input.ports.evaluateEpisodes(episodes);
+        }),
+    );
+    if (!evaluation) {
+      return buildUnassignedResult(
+        cache,
+        episodeEvalCalls,
+        splitEvalCalls,
+        true,
+      );
+    }
     log("step5:merge-candidate", {
       cardId: card.id,
       consistent: evaluation.consistent,
@@ -129,7 +165,19 @@ export const applyEpisodeToPolicyCardFlow = async (
     if (!evaluation.consistent || !evaluation.clear) {
       continue;
     }
-    const hypothesis = await input.ports.buildHypothesis(episodes);
+    const hypothesis = await recoverable(
+      input,
+      "step5:build-merged-hypothesis",
+      () => input.ports.buildHypothesis(episodes),
+    );
+    if (!hypothesis) {
+      return buildUnassignedResult(
+        cache,
+        episodeEvalCalls,
+        splitEvalCalls,
+        true,
+      );
+    }
     return {
       outcome: "merged",
       updatedCards: [
@@ -146,18 +194,32 @@ export const applyEpisodeToPolicyCardFlow = async (
   }
 
   log("step7:cluster-unassigned");
-  const stateClusters = await input.ports.clusterByState(
-    [...input.unassignedEpisodes, input.newEpisode],
-    input.newEpisode,
+  const stateClusters = await recoverable(input, "step7:cluster-by-state", () =>
+    input.ports.clusterByState(
+      [...input.unassignedEpisodes, input.newEpisode],
+      input.newEpisode,
+    ),
   );
+  if (!stateClusters) {
+    return buildUnassignedResult(cache, episodeEvalCalls, splitEvalCalls, true);
+  }
   for (const stateCluster of stateClusters) {
     if (!containsEpisode(stateCluster, input.newEpisode.id)) {
       continue;
     }
-    const actionClusters = await input.ports.clusterByAction(
-      stateCluster,
-      input.newEpisode,
+    const actionClusters = await recoverable(
+      input,
+      "step7:cluster-by-action",
+      () => input.ports.clusterByAction(stateCluster, input.newEpisode),
     );
+    if (!actionClusters) {
+      return buildUnassignedResult(
+        cache,
+        episodeEvalCalls,
+        splitEvalCalls,
+        true,
+      );
+    }
     for (const cluster of actionClusters) {
       if (
         !containsEpisode(cluster, input.newEpisode.id) ||
@@ -165,10 +227,23 @@ export const applyEpisodeToPolicyCardFlow = async (
       ) {
         continue;
       }
-      const evaluation = await evaluateEpisodeSet(cluster, cache, async () => {
-        episodeEvalCalls += 1;
-        return input.ports.evaluateEpisodes(cluster);
-      });
+      const evaluation = await recoverable(
+        input,
+        "step7:evaluate-create-candidate",
+        () =>
+          evaluateEpisodeSet(cluster, cache, async () => {
+            episodeEvalCalls += 1;
+            return input.ports.evaluateEpisodes(cluster);
+          }),
+      );
+      if (!evaluation) {
+        return buildUnassignedResult(
+          cache,
+          episodeEvalCalls,
+          splitEvalCalls,
+          true,
+        );
+      }
       log("step7:create-candidate", {
         size: cluster.length,
         consistent: evaluation.consistent,
@@ -177,7 +252,19 @@ export const applyEpisodeToPolicyCardFlow = async (
       if (!evaluation.consistent || !evaluation.clear) {
         continue;
       }
-      const hypothesis = await input.ports.buildHypothesis(cluster);
+      const hypothesis = await recoverable(
+        input,
+        "step7:build-created-hypothesis",
+        () => input.ports.buildHypothesis(cluster),
+      );
+      if (!hypothesis) {
+        return buildUnassignedResult(
+          cache,
+          episodeEvalCalls,
+          splitEvalCalls,
+          true,
+        );
+      }
       return {
         outcome: "created",
         updatedCards: [buildCardFromHypothesis(input.botId, hypothesis)],
@@ -190,10 +277,20 @@ export const applyEpisodeToPolicyCardFlow = async (
   log("step8:split-candidates");
   for (const card of candidateCards) {
     const relatedEpisodes = input.episodesByCardId.get(card.id) ?? [];
-    const clusters = await input.ports.clusterByAction(
-      [...relatedEpisodes, input.newEpisode],
-      input.newEpisode,
+    const clusters = await recoverable(input, "step8:cluster-by-action", () =>
+      input.ports.clusterByAction(
+        [...relatedEpisodes, input.newEpisode],
+        input.newEpisode,
+      ),
     );
+    if (!clusters) {
+      return buildUnassignedResult(
+        cache,
+        episodeEvalCalls,
+        splitEvalCalls,
+        true,
+      );
+    }
     for (const groupA of clusters) {
       if (!containsEpisode(groupA, input.newEpisode.id) || groupA.length < 2) {
         continue;
@@ -209,7 +306,17 @@ export const applyEpisodeToPolicyCardFlow = async (
       const cached = cache.splitEvaluations.get(splitKey);
       const evaluation = cached
         ? ((cache.cacheHits += 1), cached)
-        : await input.ports.evaluateSplit(groupA, groupB);
+        : await recoverable(input, "step8:evaluate-split", () =>
+            input.ports.evaluateSplit(groupA, groupB),
+          );
+      if (!evaluation) {
+        return buildUnassignedResult(
+          cache,
+          episodeEvalCalls,
+          splitEvalCalls,
+          true,
+        );
+      }
       if (!cached) {
         splitEvalCalls += 1;
         cache.splitEvaluations.set(splitKey, evaluation);
@@ -224,10 +331,24 @@ export const applyEpisodeToPolicyCardFlow = async (
       if (!evaluation.consistent || !evaluation.clear) {
         continue;
       }
-      const [hypothesisA, hypothesisB] = await Promise.all([
-        input.ports.buildHypothesis(groupA),
-        input.ports.buildHypothesis(groupB),
-      ]);
+      const splitHypotheses = await recoverable(
+        input,
+        "step8:build-split-hypotheses",
+        () =>
+          Promise.all([
+            input.ports.buildHypothesis(groupA),
+            input.ports.buildHypothesis(groupB),
+          ]),
+      );
+      if (!splitHypotheses) {
+        return buildUnassignedResult(
+          cache,
+          episodeEvalCalls,
+          splitEvalCalls,
+          true,
+        );
+      }
+      const [hypothesisA, hypothesisB] = splitHypotheses;
       return {
         outcome: "split",
         updatedCards: [
@@ -246,12 +367,7 @@ export const applyEpisodeToPolicyCardFlow = async (
   }
 
   log("step10:unassigned", { episodeId: input.newEpisode.id });
-  return {
-    outcome: "unassigned",
-    updatedCards: [],
-    assignedEpisodeIds: [],
-    stats: buildStats(cache, episodeEvalCalls, splitEvalCalls),
-  };
+  return buildUnassignedResult(cache, episodeEvalCalls, splitEvalCalls, false);
 };
 
 const evaluateEpisodeSet = async (
@@ -334,3 +450,37 @@ const buildStats = (
   splitEvalCalls,
   cacheHits: cache.cacheHits,
 });
+
+const buildUnassignedResult = (
+  cache: PolicyCardFlowCache,
+  episodeEvalCalls: number,
+  splitEvalCalls: number,
+  recoverableError: boolean,
+): PolicyCardFlowResult => ({
+  outcome: "unassigned",
+  updatedCards: [],
+  assignedEpisodeIds: [],
+  recoverableError,
+  stats: buildStats(cache, episodeEvalCalls, splitEvalCalls),
+});
+
+const recoverable = async <T>(
+  input: PolicyCardFlowInput,
+  step: string,
+  run: () => Promise<T>,
+): Promise<T | null> => {
+  try {
+    return await run();
+  } catch (error) {
+    if (!(error instanceof PolicyFlowRecoverableError)) {
+      throw error;
+    }
+    input.ports.logger?.debug(step, {
+      level: "warn",
+      outcome: "unassigned",
+      reason: error.message,
+    });
+    console.warn(`[policy-flow] ${step} recoverable error`, error.message);
+    return null;
+  }
+};
