@@ -92,6 +92,7 @@ test("normalizeChunkingConfig applies defaults", () => {
   assert.deepEqual(normalizeChunkingConfig(undefined), {
     chunkSizeTurns: 6,
     chunkOverlapTurns: 2,
+    agentInitiatedResponseMaxHours: 24,
   });
 });
 
@@ -122,6 +123,123 @@ test("buildConversationChunks uses overlap windows", () => {
       ["turn-3", "turn-4", "turn-5"],
     ],
   );
+});
+
+test("buildConversationChunks includes agent initiated turns only when a user responds in the window", () => {
+  const turns: TurnRecord[] = [
+    {
+      id: "user-1",
+      botId: "ao",
+      threadId: "thread-1",
+      source: "user",
+      createdAtIso: "2026-07-18T00:00:00.000Z",
+      messages: [
+        {
+          role: "user",
+          content: "最初の相談",
+          timestampIso: "2026-07-18T00:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          content: "最初の回答",
+          timestampIso: "2026-07-18T00:00:01.000Z",
+        },
+      ],
+    },
+    {
+      id: "proactive-1",
+      botId: "ao",
+      threadId: "thread-1",
+      source: "simple_pomdp",
+      createdAtIso: "2026-07-18T01:00:00.000Z",
+      messages: [
+        {
+          role: "user",
+          content: "background instruction",
+          timestampIso: "2026-07-18T01:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          content: "補足すると、この観点もあります",
+          timestampIso: "2026-07-18T01:00:01.000Z",
+        },
+      ],
+    },
+    {
+      id: "proactive-2",
+      botId: "ao",
+      threadId: "thread-1",
+      source: "simple_pomdp",
+      createdAtIso: "2026-07-18T02:00:00.000Z",
+      messages: [
+        {
+          role: "user",
+          content: "background instruction",
+          timestampIso: "2026-07-18T02:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          content: "もう一点だけ共有します",
+          timestampIso: "2026-07-18T02:00:01.000Z",
+        },
+      ],
+    },
+    {
+      id: "user-2",
+      botId: "ao",
+      threadId: "thread-1",
+      source: "user",
+      createdAtIso: "2026-07-18T03:00:00.000Z",
+      messages: [
+        {
+          role: "user",
+          content: "それは気になります",
+          timestampIso: "2026-07-18T03:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          content: "では少し掘ります",
+          timestampIso: "2026-07-18T03:00:01.000Z",
+        },
+      ],
+    },
+    {
+      id: "proactive-3",
+      botId: "ao",
+      threadId: "thread-1",
+      source: "simple_pomdp",
+      createdAtIso: "2026-07-18T04:00:00.000Z",
+      messages: [
+        {
+          role: "user",
+          content: "background instruction",
+          timestampIso: "2026-07-18T04:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          content: "未応答の働きかけ",
+          timestampIso: "2026-07-18T04:00:01.000Z",
+        },
+      ],
+    },
+  ];
+
+  const chunks = buildConversationChunks(turns, {
+    chunkSizeTurns: 4,
+    chunkOverlapTurns: 1,
+    agentInitiatedResponseMaxHours: 24,
+  });
+
+  assert.deepEqual(chunks[0]?.turnRecordIds, [
+    "user-1",
+    "proactive-1",
+    "proactive-2",
+    "user-2",
+  ]);
+  assert.doesNotMatch(chunks[0]?.chunkText ?? "", /background instruction/);
+  assert.match(chunks[0]?.chunkText ?? "", /source=simple_pomdp/);
+  assert.match(chunks[0]?.chunkText ?? "", /もう一点だけ共有します/);
+  assert.doesNotMatch(chunks[0]?.chunkText ?? "", /未応答の働きかけ/);
 });
 
 test("buildPolicyQueryContext includes current input and recent turns", () => {

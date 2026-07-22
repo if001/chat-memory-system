@@ -76,6 +76,11 @@ export const buildMemoryBackgroundRunnerFromEnv = (
     ),
     chunkSizeTurns: optionalNumberFromEnv(env, "MEMORY_CHUNK_SIZE_TURNS", 6),
     chunkOverlapTurns: optionalNumberFromEnv(env, "MEMORY_CHUNK_OVERLAP_TURNS", 2),
+    agentInitiatedResponseMaxHours: optionalNumberFromEnv(
+      env,
+      "MEMORY_AGENT_INITIATED_RESPONSE_MAX_HOURS",
+      24,
+    ),
     policyQueryHistoryTurns: optionalNumberFromEnv(
       env,
       "MEMORY_POLICY_QUERY_HISTORY_TURNS",

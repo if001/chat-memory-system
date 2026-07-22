@@ -24,6 +24,7 @@ test("buildMemoryBackgroundRunnerFromEnv wires service and runner config", () =>
       MEMORY_LLM_CACHE_TTL_MS: "60000",
       MEMORY_CHUNK_SIZE_TURNS: "5",
       MEMORY_CHUNK_OVERLAP_TURNS: "1",
+      MEMORY_AGENT_INITIATED_RESPONSE_MAX_HOURS: "12",
       MEMORY_POLICY_QUERY_HISTORY_TURNS: "6",
     },
     {
@@ -51,6 +52,7 @@ test("buildMemoryBackgroundRunnerFromEnv wires service and runner config", () =>
     llmCacheTtlMs: 60000,
     chunkSizeTurns: 5,
     chunkOverlapTurns: 1,
+    agentInitiatedResponseMaxHours: 12,
     policyQueryHistoryTurns: 6,
   });
   assert.deepEqual(runnerInput, {

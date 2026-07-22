@@ -10,6 +10,7 @@ export interface TurnRecord {
   id?: string;
   botId: string;
   threadId: string;
+  source?: "user" | "simple_pomdp" | "scheduled" | "unknown";
   messages: TurnMessage[];
   createdAtIso: string;
 }
@@ -31,6 +32,7 @@ export interface ConversationChunk {
 export interface ChunkingConfig {
   chunkSizeTurns: number;
   chunkOverlapTurns: number;
+  agentInitiatedResponseMaxHours: number;
 }
 
 export interface EpisodeCase {

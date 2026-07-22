@@ -47,6 +47,7 @@ export interface MemorySystemOptions {
   policyQueryHistoryTurns?: number;
   policyQueryHistoryMaxTokens?: number;
   policySearchLimit?: number;
+  agentInitiatedResponseMaxHours?: number;
   policyFlowPorts?: Partial<PolicyCardFlowPorts>;
 }
 
@@ -124,6 +125,7 @@ class DefaultMemorySystemService implements MemorySystemService {
     this.chunkingConfig = normalizeChunkingConfig({
       chunkSizeTurns: options.chunkSizeTurns,
       chunkOverlapTurns: options.chunkOverlapTurns,
+      agentInitiatedResponseMaxHours: options.agentInitiatedResponseMaxHours,
     });
     this.policyQueryHistoryTurns = options.policyQueryHistoryTurns ?? 4;
     this.policyQueryHistoryMaxTokens =
@@ -172,7 +174,15 @@ class DefaultMemorySystemService implements MemorySystemService {
       threadId,
       limit,
     );
+    console.log(
+      "[buildConversationChunksForThread]: turnRecords.length=",
+      turnRecords.length,
+    );
     const chunks = buildConversationChunks(turnRecords, this.chunkingConfig);
+    console.log(
+      "[buildConversationChunksForThread]: chunks.length=",
+      chunks.length,
+    );
     await this.repository.saveConversationChunks(chunks);
     return chunks;
   }
@@ -257,7 +267,7 @@ class DefaultMemorySystemService implements MemorySystemService {
       console.log(
         "[buildOrUpdatePolicyCards]: applyEpisodeToPolicyCardFlow done",
       );
-
+      console.log("[buildOrUpdatePolicyCards] result", result);
       for (const card of result.updatedCards) {
         await this.repository.upsertPolicyCard(card);
         updatedCards.push(card);
@@ -295,7 +305,8 @@ class DefaultMemorySystemService implements MemorySystemService {
 
       await this.repository.markEpisodeProcessed(episode.id);
       console.log("[buildOrUpdatePolicyCards]: done...");
-      return;
+      // return; // debug用return
+      await sleep(60 * 1000); //60s
     }
     console.log("[buildOrUpdatePolicyCards]: done");
     return updatedCards;
@@ -406,12 +417,13 @@ const buildDefaultPolicyFlowPorts = (
     searchCards: async (hypothesis, cards, limit) =>
       rankCardsBySimilarity(hypothesis, cards).slice(0, limit),
     evaluateEpisodes: async (episodes) => {
-      console.log("[evaluateEpisodes]: call llm");
+      console.log("[evaluateEpisodes]: call llm episode", episodes.length);
       return wrapRecoverable("evaluateEpisodes", () =>
         llm.generateJson<PolicyEvaluation>(
           [
             "あなたは policy evaluation judge です。",
             "Episode 群が 1 つの Policy として一貫しているかを判定してください。",
+            "Episodeはユーザーとagentの具体的な行動結果で、PolicyとはEpisode群を抽象的にまとめたものです。",
             "consistent: このEpisode群は、提示されたstateの具体例であり、提示されたactionの具体的実行であり、outcomeも同じ種類の変化として説明できるか。",
             "clear: このPolicyは、状態を観測したAgentが、取るべき手順を迷わず選べる記述になっているか。",
             "JSON のみを返してください。",
@@ -431,6 +443,7 @@ const buildDefaultPolicyFlowPorts = (
           [
             "あなたは policy split evaluation judge です。",
             "2 つの Episode 群を別 Policy に分けるべきかを判定してください。",
+            "Episodeはユーザーとagentの具体的な行動結果で、PolicyとはEpisode群を抽象的にまとめたものです。",
             "consistent: このEpisode群は、提示されたstateの具体例であり、提示されたactionの具体的実行であり、outcomeも同じ種類の変化として説明できるか。",
             "clear: このPolicyは、状態を観測したAgentが、取るべき手順を迷わず選べる記述になっているか。",
             "JSON のみを返してください。",
@@ -524,3 +537,5 @@ const buildSimilarityClusters = async (
   });
   return clusters.length >= 2 ? [clusters] : [];
 };
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
