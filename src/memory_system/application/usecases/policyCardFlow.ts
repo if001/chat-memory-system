@@ -133,13 +133,19 @@ export const applyEpisodeToPolicyCardFlow = async (
   if (!candidateCards) {
     return buildUnassignedResult(cache, episodeEvalCalls, splitEvalCalls, true);
   }
-  log("step3: candidateCards", { cards: candidateCards.length });
+  log("step3: Hypothesisとstatusが類似のcard数: ", {
+    cards: candidateCards.length,
+  });
   for (const card of candidateCards) {
     const episodes = [
       ...(input.episodesByCardId.get(card.id) ?? []),
       input.newEpisode,
     ];
-    log("step3: episodes", { episodes: episodes.length });
+
+    log("step3: 類似cardのepisodes+new_episode", {
+      card_id: card.id,
+      episodes: episodes.length,
+    });
     const evaluation = await recoverable(
       input,
       "step5:evaluate-merge-candidate",
@@ -149,6 +155,9 @@ export const applyEpisodeToPolicyCardFlow = async (
           return input.ports.evaluateEpisodes(episodes);
         }),
     );
+    log("step5: eval: ", {
+      evaluation: evaluation,
+    });
     if (!evaluation) {
       return buildUnassignedResult(
         cache,
