@@ -5,7 +5,6 @@ import {
   MemoryReport,
   PolicyCard,
   PolicySplitCandidate,
-  RelationshipInsightReport,
   TurnRecord,
 } from "../domain/types";
 import { buildPolicyCardFromEpisodes } from "../application/usecases/buildPolicyCard";
@@ -86,10 +85,6 @@ export interface MemorySystemService {
   ): Promise<PolicySplitCandidate | null>;
   queryApplicablePolicyCards(input: QueryPolicyInput): Promise<PolicyCard[]>;
   generateMemoryReport(botId: string, threadId: string): Promise<MemoryReport>;
-  generateRelationshipInsightReport(
-    botId: string,
-    threadId: string,
-  ): Promise<RelationshipInsightReport>;
 }
 
 class DefaultMemorySystemService implements MemorySystemService {
@@ -281,79 +276,6 @@ class DefaultMemorySystemService implements MemorySystemService {
     );
   }
 
-  async generateRelationshipInsightReport(
-    botId: string,
-    threadId: string,
-  ): Promise<RelationshipInsightReport> {
-    const recentContext = await this.getRecentConversationContext({
-      botId,
-      threadId,
-      limit: Math.max(this.policyQueryHistoryTurns, 6),
-      maxTokens: Math.max(this.policyQueryHistoryMaxTokens, 1200),
-    });
-    const cards = await this.repository.fetchPolicyCards(botId, 8);
-    if (!recentContext.trim() && cards.length === 0) {
-      return {
-        botId,
-        threadId,
-        clarificationCandidates: [],
-        proactiveContextCandidates: [],
-        repairCandidates: [],
-        boundaryCandidates: [],
-        createdAtIso: new Date().toISOString(),
-      };
-    }
-
-    const parsed = await this.llm.generateJson<{
-      clarificationCandidates?: string[];
-      proactiveContextCandidates?: string[];
-      repairCandidates?: string[];
-      boundaryCandidates?: string[];
-    }>(
-      [
-        "あなたは autonomous assistant 向けの relationship-support insight candidate を作成します。",
-        "目的は memory 内部の保守ではなく、ユーザー向けに行いうる支援アクション候補を提案することです。",
-        "recentConversationContext は current thread のコンパクトな要約です。",
-        "policyCards は、clarification, proactive context, repair, boundary clarification の提案に役立つ安定した memory summary です。",
-        "JSON のみを返してください。",
-      ].join(" "),
-      JSON.stringify({
-        instruction: [
-          "recentConversationContext と policyCards を読んでください。",
-          "将来の Work Unit を正当化できる具体的な candidate string だけを返してください。",
-          "clarificationCandidates: 明確化する価値があるユーザーの好み、制約、目標。",
-          "proactiveContextCandidates: 先回りして短く共有する価値がある文脈やリマインド。",
-          "repairCandidates: 修復したほうがよい不一致、矛盾、摩擦。",
-          "boundaryCandidates: 将来のやりとりをきれいにするために明確化したほうがよい区別やスコープ境界。",
-          "clarificationCandidates, proactiveContextCandidates, repairCandidates, boundaryCandidates を string array として厳密に返してください。",
-        ].join(" "),
-        recentConversationContext: recentContext,
-        policyCards: cards.map((card) => ({
-          title: card.title,
-          appliesWhen: card.appliesWhen,
-          recommendedBehavior: card.recommendedBehavior,
-          avoidBehavior: card.avoidBehavior,
-          distinctionNotes: card.distinctionNotes,
-          confidence: card.confidence,
-        })),
-      }),
-    );
-
-    return {
-      botId,
-      threadId,
-      clarificationCandidates: normalizeCandidateList(
-        parsed.clarificationCandidates,
-      ),
-      proactiveContextCandidates: normalizeCandidateList(
-        parsed.proactiveContextCandidates,
-      ),
-      repairCandidates: normalizeCandidateList(parsed.repairCandidates),
-      boundaryCandidates: normalizeCandidateList(parsed.boundaryCandidates),
-      createdAtIso: new Date().toISOString(),
-    };
-  }
-
   private async applyPolicyDecision(
     botId: string,
     episode: EpisodeCase,
@@ -506,9 +428,3 @@ const replaceCard = (
   const remaining = cards.filter((card) => card.id !== updated.id);
   return [updated, ...remaining];
 };
-
-const normalizeCandidateList = (values: string[] | undefined): string[] =>
-  (values ?? [])
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .slice(0, 5);

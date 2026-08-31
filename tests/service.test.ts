@@ -220,42 +220,6 @@ test("generateMemoryReport delegates built signals to repository", async () => {
   assert.ok(report.staleNotes.some((note) => note.includes("pc-1")));
 });
 
-test("generateRelationshipInsightReport returns llm-derived user-facing candidates", async () => {
-  const service = createStubbedService({
-    generateJsonQueue: [
-      {
-        clarificationCandidates: ["Ask whether shorter proactive updates are preferred."],
-        proactiveContextCandidates: ["Share the current implementation constraint before proposing options."],
-        repairCandidates: ["Repair the recent mismatch between research framing and implementation support."],
-        boundaryCandidates: ["Clarify whether future questions should stay within implementation support."],
-      },
-    ],
-    fetchRecentTurnRecordsForThread: async () => [
-      buildTurnRecord(
-        "ao",
-        "thread-1",
-        "実装よりの提案が欲しいです",
-        "了解しました",
-      ),
-    ],
-    fetchPolicyCards: async () => [buildPolicyCard("ao", "pc-1")],
-  });
-
-  const report = await service.generateRelationshipInsightReport("ao", "thread-1");
-
-  assert.deepEqual(report.clarificationCandidates, [
-    "Ask whether shorter proactive updates are preferred.",
-  ]);
-  assert.deepEqual(report.proactiveContextCandidates, [
-    "Share the current implementation constraint before proposing options.",
-  ]);
-  assert.deepEqual(report.repairCandidates, [
-    "Repair the recent mismatch between research framing and implementation support.",
-  ]);
-  assert.deepEqual(report.boundaryCandidates, [
-    "Clarify whether future questions should stay within implementation support.",
-  ]);
-});
 
 type RepositoryStub = {
   saveTurnRecord(input: TurnRecord): Promise<void>;
