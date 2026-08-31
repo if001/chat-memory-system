@@ -11,6 +11,8 @@ export const buildTurnRecordId = (
     JSON.stringify({
       botId: record.botId,
       threadId: record.threadId,
+      kind: record.kind,
+      sourceInteractionId: record.sourceInteractionId,
       createdAtIso: record.createdAtIso,
       messages: record.messages,
     }),

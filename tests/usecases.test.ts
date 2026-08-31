@@ -131,7 +131,7 @@ test("buildConversationChunks includes agent initiated turns only when a user re
       id: "user-1",
       botId: "ao",
       threadId: "thread-1",
-      source: "user",
+      kind: "human",
       createdAtIso: "2026-07-18T00:00:00.000Z",
       messages: [
         {
@@ -150,7 +150,7 @@ test("buildConversationChunks includes agent initiated turns only when a user re
       id: "proactive-1",
       botId: "ao",
       threadId: "thread-1",
-      source: "simple_pomdp",
+      kind: "proactive",
       createdAtIso: "2026-07-18T01:00:00.000Z",
       messages: [
         {
@@ -169,7 +169,7 @@ test("buildConversationChunks includes agent initiated turns only when a user re
       id: "proactive-2",
       botId: "ao",
       threadId: "thread-1",
-      source: "simple_pomdp",
+      kind: "proactive",
       createdAtIso: "2026-07-18T02:00:00.000Z",
       messages: [
         {
@@ -188,7 +188,7 @@ test("buildConversationChunks includes agent initiated turns only when a user re
       id: "user-2",
       botId: "ao",
       threadId: "thread-1",
-      source: "user",
+      kind: "human",
       createdAtIso: "2026-07-18T03:00:00.000Z",
       messages: [
         {
@@ -207,7 +207,7 @@ test("buildConversationChunks includes agent initiated turns only when a user re
       id: "proactive-3",
       botId: "ao",
       threadId: "thread-1",
-      source: "simple_pomdp",
+      kind: "proactive",
       createdAtIso: "2026-07-18T04:00:00.000Z",
       messages: [
         {
@@ -237,7 +237,7 @@ test("buildConversationChunks includes agent initiated turns only when a user re
     "user-2",
   ]);
   assert.doesNotMatch(chunks[0]?.chunkText ?? "", /background instruction/);
-  assert.match(chunks[0]?.chunkText ?? "", /source=simple_pomdp/);
+  assert.match(chunks[0]?.chunkText ?? "", /kind=proactive/);
   assert.match(chunks[0]?.chunkText ?? "", /もう一点だけ共有します/);
   assert.doesNotMatch(chunks[0]?.chunkText ?? "", /未応答の働きかけ/);
 });

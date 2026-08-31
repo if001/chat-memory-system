@@ -10,6 +10,7 @@ import {
   PolicyCard,
   TurnRecord,
 } from "../src/memory_system/domain/types";
+import { buildTurnRecordId } from "../src/memory_system/domain/identifiers";
 import { MemoryRepository } from "../src/memory_system/infrastructure/postgres/repository";
 
 const postgresUrl = process.env.MEMORY_SYSTEM_TEST_POSTGRES_URL;
@@ -66,6 +67,80 @@ integrationTest(
       assert.equal(storedCard?.action, card.action);
     } finally {
       await cleanupBot(botId);
+      await repository.close();
+    }
+  },
+);
+
+integrationTest(
+  "turn records round-trip kinds, interaction ids, and bot/thread scopes",
+  async () => {
+    const suffix = Date.now();
+    const botId = `it-turn-${suffix}`;
+    const otherBotId = `it-turn-other-${suffix}`;
+    const repository = new MemoryRepository(postgresUrl as string);
+    const human = {
+      ...buildTurnRecord(botId, "thread-1"),
+      kind: "human" as const,
+    };
+    const proactive = {
+      ...buildTurnRecord(botId, "thread-1"),
+      kind: "proactive" as const,
+      sourceInteractionId: "interaction-1",
+      createdAtIso: "2026-07-18T00:01:00.000Z",
+    };
+    const delegation = {
+      ...buildTurnRecord(botId, "thread-2"),
+      kind: "delegation" as const,
+      createdAtIso: "2026-07-18T00:02:00.000Z",
+    };
+    const otherBot = {
+      ...buildTurnRecord(otherBotId, "thread-1"),
+      kind: "human" as const,
+    };
+
+    try {
+      await cleanupBot(botId);
+      await cleanupBot(otherBotId);
+      await Promise.all(
+        [human, proactive, delegation, otherBot].map((record) =>
+          repository.saveTurnRecord(record),
+        ),
+      );
+
+      const threadOne = await repository.fetchTurnRecordsForThread(
+        botId,
+        "thread-1",
+        10,
+      );
+      const threadTwo = await repository.fetchTurnRecordsForThread(
+        botId,
+        "thread-2",
+        10,
+      );
+      const otherBotThread = await repository.fetchTurnRecordsForThread(
+        otherBotId,
+        "thread-1",
+        10,
+      );
+
+      assert.deepEqual(
+        threadOne.map(({ kind, sourceInteractionId }) => ({
+          kind,
+          sourceInteractionId,
+        })),
+        [
+          { kind: "human", sourceInteractionId: undefined },
+          { kind: "proactive", sourceInteractionId: "interaction-1" },
+        ],
+      );
+      assert.deepEqual(threadTwo.map((record) => record.kind), ["delegation"]);
+      assert.deepEqual(otherBotThread.map((record) => record.kind), ["human"]);
+      assert.equal(threadOne[0]?.id, buildTurnRecordId(human));
+      assert.equal(buildTurnRecordId(human), buildTurnRecordId({ ...human }));
+    } finally {
+      await cleanupBot(botId);
+      await cleanupBot(otherBotId);
       await repository.close();
     }
   },
@@ -166,6 +241,7 @@ const createTestService = (connectionString: string): MemorySystemService => {
 const buildTurnRecord = (botId: string, threadId: string): TurnRecord => ({
   botId,
   threadId,
+  kind: "human",
   createdAtIso: "2026-07-18T00:00:00.000Z",
   messages: [
     {

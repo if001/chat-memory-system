@@ -37,7 +37,8 @@ export class MemoryRepository {
         id: record.id,
         botId: record.botId,
         threadId: record.threadId,
-        source: record.source ?? "unknown",
+        kind: record.kind,
+        sourceInteractionId: record.sourceInteractionId,
         messagesJson: record.messages,
         createdAt: new Date(record.createdAtIso),
       })
@@ -346,7 +347,8 @@ const mapTurnRecordRow = (
   id: row.id,
   botId: row.botId,
   threadId: row.threadId,
-  source: row.source ?? "unknown",
+  kind: row.kind,
+  sourceInteractionId: row.sourceInteractionId ?? undefined,
   messages: row.messagesJson,
   createdAtIso: new Date(row.createdAt).toISOString(),
 });

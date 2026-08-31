@@ -108,11 +108,8 @@ const buildChunkText = (turnRecords: TurnRecord[]): string =>
       const messages = turn.messages
         .map((message) => formatMessage(message))
         .join("\n");
-      const sourceLabel =
-        turn.source && turn.source !== "user" && turn.source !== "unknown"
-          ? `, source=${turn.source}`
-          : "";
-      return `Turn ${turnIndex + 1} (${turn.createdAtIso}${sourceLabel})\n${messages}`;
+      const kindLabel = turn.kind === "human" ? "" : `, kind=${turn.kind}`;
+      return `Turn ${turnIndex + 1} (${turn.createdAtIso}${kindLabel})\n${messages}`;
     })
     .join("\n\n");
 
@@ -134,7 +131,7 @@ const buildChunkableTurns = (
     const searchStart = Math.max(0, index - config.chunkSizeTurns);
     for (let candidateIndex = searchStart; candidateIndex < index; candidateIndex += 1) {
       const candidate = sortedTurns[candidateIndex];
-      if (!candidate || candidate.source !== "simple_pomdp") {
+      if (!candidate || candidate.kind !== "proactive") {
         continue;
       }
       if (responseAt - Date.parse(candidate.createdAtIso) <= maxHoursMs) {
@@ -144,7 +141,7 @@ const buildChunkableTurns = (
   });
 
   return sortedTurns.flatMap((turn) => {
-    if (turn.source !== "simple_pomdp") {
+    if (turn.kind !== "proactive") {
       return [turn];
     }
     if (!includedSimplePomdpTurnIds.has(turn.id)) {
@@ -166,8 +163,7 @@ const buildChunkableTurns = (
 };
 
 const isRealUserTurn = (turn: TurnRecord): boolean =>
-  turn.source !== "simple_pomdp" &&
-  turn.source !== "scheduled" &&
+  turn.kind === "human" &&
   turn.messages.some(
     (message) => message.role === "user" && message.content.trim().length > 0,
   );

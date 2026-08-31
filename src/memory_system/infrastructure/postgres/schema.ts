@@ -12,7 +12,8 @@ export const memoryTurnRecordsTable = appSchema.table("memory_turn_records", {
   id: text("id").primaryKey(),
   botId: text("bot_id").notNull(),
   threadId: text("thread_id").notNull(),
-  source: text("source").$type<TurnRecord["source"]>(),
+  kind: text("kind").$type<TurnRecord["kind"]>().notNull(),
+  sourceInteractionId: text("source_interaction_id"),
   messagesJson: jsonb("messages_json").$type<TurnRecord["messages"]>().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
 });
