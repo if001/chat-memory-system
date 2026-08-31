@@ -5,3 +5,6 @@ lib/
 docs/
 node_modules/
 drizzle/
+
+coverage/*
+data/*
