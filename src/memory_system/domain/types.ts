@@ -78,13 +78,3 @@ export interface PolicyEvaluation {
   consistent: boolean;
   clear: boolean;
 }
-
-export interface RelationshipInsightReport {
-  botId: string;
-  threadId: string;
-  clarificationCandidates: string[];
-  proactiveContextCandidates: string[];
-  repairCandidates: string[];
-  boundaryCandidates: string[];
-  createdAtIso: string;
-}

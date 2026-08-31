@@ -5,7 +5,6 @@ import {
   PolicyCard,
   PolicyEvaluation,
   PolicyHypothesis,
-  RelationshipInsightReport,
   TurnRecord,
 } from "../domain/types";
 import { buildPolicyHypothesisFromEpisodes } from "../application/usecases/buildPolicyCard";
@@ -82,10 +81,6 @@ export interface MemorySystemService {
     limit?: number,
   ): Promise<PolicyCard[]>;
   queryApplicablePolicyCards(input: QueryPolicyInput): Promise<PolicyCard[]>;
-  generateRelationshipInsightReport(
-    botId: string,
-    threadId: string,
-  ): Promise<RelationshipInsightReport>;
 }
 
 class DefaultMemorySystemService implements MemorySystemService {
@@ -331,65 +326,6 @@ class DefaultMemorySystemService implements MemorySystemService {
     );
     return filterApplicablePolicyCards(this.llm, queryContext, candidates);
   }
-
-  async generateRelationshipInsightReport(
-    botId: string,
-    threadId: string,
-  ): Promise<RelationshipInsightReport> {
-    const recentContext = await this.getRecentConversationContext({
-      botId,
-      threadId,
-      limit: Math.max(this.policyQueryHistoryTurns, 6),
-      maxTokens: Math.max(this.policyQueryHistoryMaxTokens, 1200),
-    });
-    const cards = await this.repository.fetchPolicyCards(botId, 8);
-    if (!recentContext.trim() && cards.length === 0) {
-      return {
-        botId,
-        threadId,
-        clarificationCandidates: [],
-        proactiveContextCandidates: [],
-        repairCandidates: [],
-        boundaryCandidates: [],
-        createdAtIso: new Date().toISOString(),
-      };
-    }
-
-    const parsed = await this.llm.generateJson<{
-      clarificationCandidates?: string[];
-      proactiveContextCandidates?: string[];
-      repairCandidates?: string[];
-      boundaryCandidates?: string[];
-    }>(
-      [
-        "あなたは autonomous assistant 向けの relationship-support insight candidate を作成します。",
-        "recentConversationContext と policyCards を読み、ユーザー支援候補を提案してください。",
-        "JSON のみを返してください。",
-      ].join(" "),
-      JSON.stringify({
-        recentConversationContext: recentContext,
-        policyCards: cards.map((card) => ({
-          state: card.state,
-          action: card.action,
-          outcome: card.outcome,
-        })),
-      }),
-    );
-
-    return {
-      botId,
-      threadId,
-      clarificationCandidates: normalizeCandidateList(
-        parsed.clarificationCandidates,
-      ),
-      proactiveContextCandidates: normalizeCandidateList(
-        parsed.proactiveContextCandidates,
-      ),
-      repairCandidates: normalizeCandidateList(parsed.repairCandidates),
-      boundaryCandidates: normalizeCandidateList(parsed.boundaryCandidates),
-      createdAtIso: new Date().toISOString(),
-    };
-  }
 }
 
 export const createMemorySystemService = (
@@ -397,12 +333,6 @@ export const createMemorySystemService = (
 ): MemorySystemService => {
   return new DefaultMemorySystemService(options);
 };
-
-const normalizeCandidateList = (values: string[] | undefined): string[] =>
-  (values ?? [])
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .slice(0, 5);
 
 const buildDefaultPolicyFlowPorts = (
   llm: JsonGeneratingClient,

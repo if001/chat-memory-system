@@ -9,7 +9,6 @@ import {
   ConversationChunk,
   EpisodeCase,
   PolicyCard,
-  RelationshipInsightReport,
   TurnRecord,
 } from "../src/memory_system/domain/types";
 
@@ -246,42 +245,6 @@ test("queryApplicablePolicyCards filters by ids returned from llm", async () => 
     cards.map((card) => card.id),
     ["pc-2"],
   );
-});
-
-test("generateRelationshipInsightReport returns normalized candidates", async () => {
-  const service = createStubbedService(
-    {
-      fetchRecentTurnRecordsForThread: async () => [
-        buildTurnRecord("実装よりの提案が欲しいです", "了解しました"),
-      ],
-      fetchPolicyCards: async () => [buildPolicyCard("pc-1", [])],
-    },
-    [
-      {
-        clarificationCandidates: [
-          " Ask whether shorter proactive updates are preferred. ",
-        ],
-        proactiveContextCandidates: [
-          "Share the current implementation constraint before proposing options.",
-        ],
-        repairCandidates: [
-          "Repair the recent mismatch between research framing and implementation support.",
-        ],
-        boundaryCandidates: [
-          "Clarify whether future questions should stay within implementation support.",
-        ],
-      } satisfies Partial<RelationshipInsightReport>,
-    ],
-  );
-
-  const report = await service.generateRelationshipInsightReport("ao", "thread-1");
-
-  assert.deepEqual(report.clarificationCandidates, [
-    "Ask whether shorter proactive updates are preferred.",
-  ]);
-  assert.equal(report.proactiveContextCandidates.length, 1);
-  assert.equal(report.repairCandidates.length, 1);
-  assert.equal(report.boundaryCandidates.length, 1);
 });
 
 test("buildOrUpdatePolicyCards leaves failed episode unassigned and continues", async () => {
