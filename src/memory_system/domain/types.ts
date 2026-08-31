@@ -10,7 +10,8 @@ export interface TurnRecord {
   id?: string;
   botId: string;
   threadId: string;
-  source?: "user" | "simple_pomdp" | "scheduled" | "unknown";
+  kind: "human" | "proactive" | "delegation";
+  sourceInteractionId?: string;
   messages: TurnMessage[];
   createdAtIso: string;
 }
