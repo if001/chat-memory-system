@@ -3,9 +3,7 @@ import {
   ConversationChunk,
   EpisodeCase,
   PolicyCard,
-  PolicyEvaluation,
-  PolicyHypothesis,
-  RelationshipInsightReport,
+  PolicySplitCandidate,
   TurnRecord,
 } from "../domain/types";
 import { buildPolicyHypothesisFromEpisodes } from "../application/usecases/buildPolicyCard";
@@ -82,10 +80,7 @@ export interface MemorySystemService {
     limit?: number,
   ): Promise<PolicyCard[]>;
   queryApplicablePolicyCards(input: QueryPolicyInput): Promise<PolicyCard[]>;
-  generateRelationshipInsightReport(
-    botId: string,
-    threadId: string,
-  ): Promise<RelationshipInsightReport>;
+  generateMemoryReport(botId: string, threadId: string): Promise<MemoryReport>;
 }
 
 class DefaultMemorySystemService implements MemorySystemService {
@@ -332,63 +327,129 @@ class DefaultMemorySystemService implements MemorySystemService {
     return filterApplicablePolicyCards(this.llm, queryContext, candidates);
   }
 
-  async generateRelationshipInsightReport(
+  async listOpenSplitCandidates(
+    botId: string,
+    limit: number = 20,
+  ): Promise<PolicySplitCandidate[]> {
+    return this.repository.fetchOpenSplitCandidates(botId, limit);
+  }
+
+  async resolveSplitCandidate(
+    botId: string,
+    candidateId: string,
+  ): Promise<PolicySplitCandidate | null> {
+    return this.transitionSplitCandidate(botId, candidateId, "resolved");
+  }
+
+  async ignoreSplitCandidate(
+    botId: string,
+    candidateId: string,
+  ): Promise<PolicySplitCandidate | null> {
+    return this.transitionSplitCandidate(botId, candidateId, "ignored");
+  }
+
+  async generateMemoryReport(
     botId: string,
     threadId: string,
-  ): Promise<RelationshipInsightReport> {
-    const recentContext = await this.getRecentConversationContext({
+  ): Promise<MemoryReport> {
+    const cards = await this.repository.fetchPolicyCards(botId, 20);
+    const signals = buildMemoryReportSignals(cards, new Date());
+    return this.repository.createMemoryReport(
       botId,
       threadId,
-      limit: Math.max(this.policyQueryHistoryTurns, 6),
-      maxTokens: Math.max(this.policyQueryHistoryMaxTokens, 1200),
-    });
-    const cards = await this.repository.fetchPolicyCards(botId, 8);
-    if (!recentContext.trim() && cards.length === 0) {
-      return {
-        botId,
-        threadId,
-        clarificationCandidates: [],
-        proactiveContextCandidates: [],
-        repairCandidates: [],
-        boundaryCandidates: [],
-        createdAtIso: new Date().toISOString(),
-      };
+      signals.gaps,
+      signals.staleNotes,
+      signals.conflicts,
+    );
+  }
+
+  private async applyPolicyDecision(
+    botId: string,
+    episode: EpisodeCase,
+    decision: Awaited<ReturnType<typeof decidePolicyCardUpdate>>,
+    existingCards: PolicyCard[],
+  ): Promise<PolicyCard | null> {
+    if (decision.decision === "merge" && decision.targetPolicyCardId) {
+      const existing = existingCards.find(
+        (card) => card.id === decision.targetPolicyCardId,
+      );
+      if (existing && decision.updatedPolicyCard) {
+        const updatedCard = mergePolicyCardUpdate(
+          existing,
+          decision.updatedPolicyCard,
+          episode,
+        );
+        await this.repository.upsertPolicyCard(updatedCard);
+        return updatedCard;
+      }
     }
 
-    const parsed = await this.llm.generateJson<{
-      clarificationCandidates?: string[];
-      proactiveContextCandidates?: string[];
-      repairCandidates?: string[];
-      boundaryCandidates?: string[];
-    }>(
-      [
-        "あなたは autonomous assistant 向けの relationship-support insight candidate を作成します。",
-        "recentConversationContext と policyCards を読み、ユーザー支援候補を提案してください。",
-        "JSON のみを返してください。",
-      ].join(" "),
-      JSON.stringify({
-        recentConversationContext: recentContext,
-        policyCards: cards.map((card) => ({
-          state: card.state,
-          action: card.action,
-          outcome: card.outcome,
-        })),
-      }),
-    );
+    if (decision.decision === "split_existing") {
+      await this.repository.savePolicySplitCandidate({
+        id: buildSplitCandidateId(episode.id, decision.targetPolicyCardId),
+        botId,
+        episodeId: episode.id,
+        targetPolicyCardId: decision.targetPolicyCardId,
+        reason: decision.reason,
+        status: "open",
+        createdAtIso: new Date().toISOString(),
+      });
+    }
 
-    return {
+    const createdCard = await buildPolicyCardFromEpisodes(this.llm, botId, [
+      episode,
+    ]);
+    if (!createdCard) {
+      return null;
+    }
+    await this.repository.upsertPolicyCard(createdCard);
+    return createdCard;
+  }
+
+  private async transitionSplitCandidate(
+    botId: string,
+    candidateId: string,
+    nextStatus: "resolved" | "ignored",
+  ): Promise<PolicySplitCandidate | null> {
+    const existing = await this.repository.fetchPolicySplitCandidateById(
       botId,
-      threadId,
-      clarificationCandidates: normalizeCandidateList(
-        parsed.clarificationCandidates,
-      ),
-      proactiveContextCandidates: normalizeCandidateList(
-        parsed.proactiveContextCandidates,
-      ),
-      repairCandidates: normalizeCandidateList(parsed.repairCandidates),
-      boundaryCandidates: normalizeCandidateList(parsed.boundaryCandidates),
-      createdAtIso: new Date().toISOString(),
-    };
+      candidateId,
+    );
+    if (!existing) {
+      return null;
+    }
+    const updated = transitionPolicySplitCandidate(existing, nextStatus);
+    await this.repository.updatePolicySplitCandidateStatus(
+      botId,
+      candidateId,
+      updated.status,
+    );
+    if (nextStatus === "resolved") {
+      await this.applyResolvedSplitCandidate(botId, updated);
+    }
+    return updated;
+  }
+
+  private async applyResolvedSplitCandidate(
+    botId: string,
+    candidate: PolicySplitCandidate,
+  ): Promise<void> {
+    if (!candidate.targetPolicyCardId) {
+      return;
+    }
+    const [episode, targetCard] = await Promise.all([
+      this.repository.fetchEpisodeById(botId, candidate.episodeId),
+      this.repository.fetchPolicyCardById(botId, candidate.targetPolicyCardId),
+    ]);
+    if (!episode || !targetCard) {
+      return;
+    }
+    const updatedCard = applyResolvedSplitCandidate(
+      targetCard,
+      episode,
+      candidate,
+    );
+    await this.repository.upsertPolicyCard(updatedCard);
   }
 }
 
@@ -517,25 +578,3 @@ const tokenOverlap = (left: string, right: string): number => {
   }
   return overlap;
 };
-
-const tokenize = (value: string): string[] =>
-  value
-    .toLowerCase()
-    .split(/[^a-z0-9\u3040-\u30ff\u3400-\u9fff]+/i)
-    .filter((token) => token.length > 0);
-
-const buildSimilarityClusters = async (
-  episodes: EpisodeCase[],
-  newEpisode: EpisodeCase,
-  field: "state" | "action",
-): Promise<EpisodeCase[][]> => {
-  const clusters = episodes.filter((episode) => {
-    if (episode.id === newEpisode.id) {
-      return true;
-    }
-    return tokenOverlap(episode[field], newEpisode[field]) > 0;
-  });
-  return clusters.length >= 2 ? [clusters] : [];
-};
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

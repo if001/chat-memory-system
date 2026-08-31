@@ -256,33 +256,38 @@ test("generateRelationshipInsightReport returns normalized candidates", async ()
       ],
       fetchPolicyCards: async () => [buildPolicyCard("pc-1", [])],
     },
-    [
-      {
-        clarificationCandidates: [
-          " Ask whether shorter proactive updates are preferred. ",
-        ],
-        proactiveContextCandidates: [
-          "Share the current implementation constraint before proposing options.",
-        ],
-        repairCandidates: [
-          "Repair the recent mismatch between research framing and implementation support.",
-        ],
-        boundaryCandidates: [
-          "Clarify whether future questions should stay within implementation support.",
-        ],
-      } satisfies Partial<RelationshipInsightReport>,
-    ],
-  );
+  });
 
-  const report = await service.generateRelationshipInsightReport("ao", "thread-1");
+  const result = await service.ignoreSplitCandidate("ao", "candidate-1");
 
-  assert.deepEqual(report.clarificationCandidates, [
-    "Ask whether shorter proactive updates are preferred.",
-  ]);
-  assert.equal(report.proactiveContextCandidates.length, 1);
-  assert.equal(report.repairCandidates.length, 1);
-  assert.equal(report.boundaryCandidates.length, 1);
+  assert.equal(result?.status, "ignored");
+  assert.deepEqual(updatedStatuses, [{ id: "candidate-1", status: "ignored" }]);
 });
+
+test("generateMemoryReport delegates built signals to repository", async () => {
+  const service = createStubbedService({
+    fetchPolicyCards: async () => [
+      buildPolicyCard("ao", "pc-1", {
+        confidence: "low",
+        lastUpdatedIso: "2026-01-01T00:00:00.000Z",
+      }),
+    ],
+    createMemoryReport: async (botId, threadId, gaps, staleNotes, conflicts) => ({
+      botId,
+      threadId,
+      gaps,
+      staleNotes,
+      conflicts,
+      createdAtIso: "2026-05-26T00:00:00.000Z",
+    }),
+  });
+
+  const report = await service.generateMemoryReport("ao", "thread-1");
+
+  assert.ok(report.gaps.includes("No high-confidence policy card exists"));
+  assert.ok(report.staleNotes.some((note) => note.includes("pc-1")));
+});
+
 
 test("buildOrUpdatePolicyCards leaves failed episode unassigned and continues", async () => {
   const processedEpisodeIds: string[] = [];
