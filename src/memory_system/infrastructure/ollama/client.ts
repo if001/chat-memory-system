@@ -35,7 +35,9 @@ export class OllamaClient {
       }),
     });
     if (!response.ok) {
-      throw new Error(`ollama chat request failed: ${response.status}`);
+      const err = await response.json();
+      console.log("[generateJson] err:", err);
+      throw new Error(`ollama chat request failed: ${response.status}, ${err}`);
     }
     const data = (await response.json()) as OllamaChatResponse;
     const raw = data.message?.content ?? "{}";

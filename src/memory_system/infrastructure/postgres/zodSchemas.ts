@@ -3,8 +3,6 @@ import {
   memoryConversationChunksTable,
   memoryEpisodeCasesTable,
   memoryPolicyCardsTable,
-  memoryPolicySplitCandidatesTable,
-  memoryReportsTable,
   memoryTurnRecordsTable,
 } from "./schema";
 
@@ -34,14 +32,4 @@ export const memoryPolicyCardSelectSchema = createSelectSchema(
 );
 export const memoryPolicyCardInsertSchema = createInsertSchema(
   memoryPolicyCardsTable,
-);
-
-export const memoryReportSelectSchema = createSelectSchema(memoryReportsTable);
-export const memoryReportInsertSchema = createInsertSchema(memoryReportsTable);
-
-export const memoryPolicySplitCandidateSelectSchema = createSelectSchema(
-  memoryPolicySplitCandidatesTable,
-);
-export const memoryPolicySplitCandidateInsertSchema = createInsertSchema(
-  memoryPolicySplitCandidatesTable,
 );

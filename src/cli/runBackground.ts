@@ -60,6 +60,14 @@ export const buildMemoryBackgroundRunnerFromEnv = (
     ollamaBaseUrl: requiredFromEnv(env, "OLLAMA_BASE_URL"),
     ollamaModel: requiredFromEnv(env, "OLLAMA_CHAT_MODEL"),
     ollamaAPIKey: requiredFromEnv(env, "OLLAMA_API_KEY"),
+    ollamaEmbeddingBaseUrl:
+      env.OLLAMA_EMBEDDING_BASE_URL ?? env.OLLAMA_BASE_URL,
+    ollamaEmbeddingModel: env.OLLAMA_EMBEDDING_MODEL,
+    ollamaEmbeddingDimension: optionalNumberFromEnv(
+      env,
+      "OLLAMA_EMBEDDING_DIMENSION",
+      768,
+    ),
     llmCacheDir: env.MEMORY_LLM_CACHE_DIR,
     llmCacheTtlMs: optionalNumberFromEnv(
       env,
@@ -68,6 +76,11 @@ export const buildMemoryBackgroundRunnerFromEnv = (
     ),
     chunkSizeTurns: optionalNumberFromEnv(env, "MEMORY_CHUNK_SIZE_TURNS", 6),
     chunkOverlapTurns: optionalNumberFromEnv(env, "MEMORY_CHUNK_OVERLAP_TURNS", 2),
+    agentInitiatedResponseMaxHours: optionalNumberFromEnv(
+      env,
+      "MEMORY_AGENT_INITIATED_RESPONSE_MAX_HOURS",
+      24,
+    ),
     policyQueryHistoryTurns: optionalNumberFromEnv(
       env,
       "MEMORY_POLICY_QUERY_HISTORY_TURNS",

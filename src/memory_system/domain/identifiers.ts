@@ -7,12 +7,14 @@ export const buildTurnRecordId = (
   if (record.id && record.id.trim().length > 0) {
     return record.id.trim();
   }
-  return `turn_${stableHash(JSON.stringify({
-    botId: record.botId,
-    threadId: record.threadId,
-    createdAtIso: record.createdAtIso,
-    messages: record.messages,
-  }))}`;
+  return `turn_${stableHash(
+    JSON.stringify({
+      botId: record.botId,
+      threadId: record.threadId,
+      createdAtIso: record.createdAtIso,
+      messages: record.messages,
+    }),
+  )}`;
 };
 
 export const buildConversationChunkId = (
@@ -20,19 +22,25 @@ export const buildConversationChunkId = (
   threadId: string,
   turnRecordIds: string[],
 ): string =>
-  `chunk_${sanitizeIdPart(botId)}_${sanitizeIdPart(threadId)}_${stableHash(turnRecordIds.join("__"))}`;
+  `chunk_${sanitizeIdPart(botId)}_${sanitizeIdPart(threadId)}_${stableHash(
+    turnRecordIds.join("__"),
+  )}`;
 
 export const buildEpisodeId = (
   botId: string,
   threadId: string,
   source: string,
-): string => `ep_${sanitizeIdPart(botId)}_${sanitizeIdPart(threadId)}_${sanitizeIdPart(source)}`;
-
-export const buildSplitCandidateId = (
-  episodeId: string,
-  targetPolicyCardId?: string,
+  index: number,
 ): string =>
-  `split_${sanitizeIdPart(episodeId)}_${sanitizeIdPart(targetPolicyCardId ?? "unassigned")}`;
+  `ep_${sanitizeIdPart(botId)}_${sanitizeIdPart(threadId)}_${sanitizeIdPart(
+    source,
+  )}_${index}`;
+
+export const buildPolicyCardId = (
+  botId: string,
+  episodeIds: string[],
+): string =>
+  `pc_${sanitizeIdPart(botId)}_${stableHash(episodeIds.sort().join("__"))}`;
 
 export const ensureTurnRecordId = (
   record: TurnRecord,

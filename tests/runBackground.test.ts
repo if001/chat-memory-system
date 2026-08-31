@@ -12,6 +12,9 @@ test("buildMemoryBackgroundRunnerFromEnv wires service and runner config", () =>
       OLLAMA_BASE_URL: "http://ollama.local",
       OLLAMA_CHAT_MODEL: "qwen3",
       OLLAMA_API_KEY: "secret",
+      OLLAMA_EMBEDDING_BASE_URL: "http://embed.local",
+      OLLAMA_EMBEDDING_MODEL: "nomic-embed-text",
+      OLLAMA_EMBEDDING_DIMENSION: "768",
       MEMORY_BACKGROUND_POLL_MS: "7000",
       MEMORY_BACKGROUND_THREAD_LIMIT: "12",
       MEMORY_BACKGROUND_TURN_LIMIT_PER_THREAD: "90",
@@ -21,6 +24,7 @@ test("buildMemoryBackgroundRunnerFromEnv wires service and runner config", () =>
       MEMORY_LLM_CACHE_TTL_MS: "60000",
       MEMORY_CHUNK_SIZE_TURNS: "5",
       MEMORY_CHUNK_OVERLAP_TURNS: "1",
+      MEMORY_AGENT_INITIATED_RESPONSE_MAX_HOURS: "12",
       MEMORY_POLICY_QUERY_HISTORY_TURNS: "6",
     },
     {
@@ -41,10 +45,14 @@ test("buildMemoryBackgroundRunnerFromEnv wires service and runner config", () =>
     ollamaBaseUrl: "http://ollama.local",
     ollamaModel: "qwen3",
     ollamaAPIKey: "secret",
+    ollamaEmbeddingBaseUrl: "http://embed.local",
+    ollamaEmbeddingModel: "nomic-embed-text",
+    ollamaEmbeddingDimension: 768,
     llmCacheDir: "/tmp/memory-cache",
     llmCacheTtlMs: 60000,
     chunkSizeTurns: 5,
     chunkOverlapTurns: 1,
+    agentInitiatedResponseMaxHours: 12,
     policyQueryHistoryTurns: 6,
   });
   assert.deepEqual(runnerInput, {

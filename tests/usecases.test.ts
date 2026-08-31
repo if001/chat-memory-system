@@ -1,154 +1,117 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { buildPolicyCardFromEpisodes } from "../src/memory_system/application/usecases/buildPolicyCard";
+import { buildPolicyHypothesisFromEpisodes } from "../src/memory_system/application/usecases/buildPolicyCard";
 import {
   buildConversationChunks,
   normalizeChunkingConfig,
 } from "../src/memory_system/application/usecases/buildConversationChunks";
-import { applyResolvedSplitCandidate } from "../src/memory_system/application/usecases/applyResolvedSplitCandidate";
 import { buildPolicyQueryContext } from "../src/memory_system/application/usecases/buildPolicyQueryContext";
 import { decidePolicyCardUpdate } from "../src/memory_system/application/usecases/decidePolicyCardUpdate";
-import {
-  extractEpisodeCase,
-  extractEpisodeCaseFromChunk,
-} from "../src/memory_system/application/usecases/extractEpisodeCase";
+import { extractEpisodeCasesFromChunk } from "../src/memory_system/application/usecases/extractEpisodeCase";
 import { filterApplicablePolicyCards } from "../src/memory_system/application/usecases/filterApplicablePolicyCards";
 import { mergePolicyCardUpdate } from "../src/memory_system/application/usecases/mergePolicyCardUpdate";
-import { transitionPolicySplitCandidate } from "../src/memory_system/application/usecases/transitionPolicySplitCandidate";
-import { OllamaClient } from "../src/memory_system/infrastructure/ollama/client";
+import {
+  applyEpisodeToPolicyCardFlow,
+  createPolicyCardFlowCache,
+  PolicyCardFlowPorts,
+  PolicyFlowRecoverableError,
+} from "../src/memory_system/application/usecases/policyCardFlow";
 import {
   ConversationChunk,
   EpisodeCase,
   PolicyCard,
-  PolicySplitCandidate,
+  PolicyEvaluation,
+  PolicyHypothesis,
   TurnRecord,
 } from "../src/memory_system/domain/types";
 
-class OllamaClientStub {
-  constructor(private readonly response: unknown) {}
+class JsonClientStub {
+  readonly calls: Array<{ systemPrompt?: string; userPrompt?: string }> = [];
 
-  async generateJson<T>(): Promise<T> {
-    return this.response as T;
+  constructor(private readonly queue: unknown[]) {}
+
+  async generateJson<T>(systemPrompt?: string, userPrompt?: string): Promise<T> {
+    this.calls.push({ systemPrompt, userPrompt });
+    if (this.queue.length === 0) {
+      throw new Error("stub queue is empty");
+    }
+    return this.queue.shift() as T;
   }
 }
 
-const turnRecord: TurnRecord = {
-  id: "turn-1",
+const buildEpisode = (
+  id: string,
+  overrides: Partial<EpisodeCase> = {},
+): EpisodeCase => ({
+  id,
   botId: "ao",
   threadId: "thread-1",
-  createdAtIso: "2026-05-26T00:00:00.000Z",
-  messages: [
-    {
-      role: "user",
-      content: "実装相談です。今回は設計ではなく運用判断を聞いています。",
-      timestampIso: "2026-05-26T00:00:00.000Z",
-    },
-    {
-      role: "assistant",
-      content: "運用判断として回答します。",
-      timestampIso: "2026-05-26T00:00:10.000Z",
-    },
-  ],
-};
-
-const episode = (overrides: Partial<EpisodeCase> = {}): EpisodeCase => ({
-  id: "ep-1",
-  botId: "ao",
-  threadId: "thread-1",
-  stateLabel: "implementation decision",
-  stateDescription: "User wants a concrete implementation decision.",
-  actionLabel: "answer concretely",
-  actionDescription: "Answer with concrete steps.",
-  outcome: "User accepted the answer.",
-  outcomeAssessment: {
-    overall: "positive",
-    score: 1,
-    naturalLanguageJudgement: "The user accepted the answer and moved forward.",
-    updateHint: "strengthen",
-  },
-  feedbackSignals: [],
-  policyUpdateNote: "Be concrete.",
-  createdAtIso: "2026-05-26T00:00:00.000Z",
+  state: `state-${id}`,
+  action: `action-${id}`,
+  outcome: `outcome-${id}`,
+  stateEmbeddingVector: [],
+  actionEmbeddingVector: [],
+  outcomeEmbeddingVector: [],
+  createdAtIso: "2026-07-18T00:00:00.000Z",
   ...overrides,
 });
 
-const policyCard = (overrides: Partial<PolicyCard> = {}): PolicyCard => ({
-  id: "pc-1",
+const buildCard = (
+  id: string,
+  relatedEpisodeIds: string[],
+  overrides: Partial<PolicyCard> = {},
+): PolicyCard => ({
+  id,
   botId: "ao",
-  title: "Implementation decision support",
-  appliesWhen: "User wants a concrete implementation choice.",
-  recommendedBehavior: "Answer concretely and compare tradeoffs briefly.",
-  avoidBehavior: "Do not stay abstract.",
-  distinctionNotes: "Different from research positioning questions.",
-  confidence: "high",
-  evidenceEpisodeIds: ["ep-1"],
-  lastUpdatedIso: "2026-05-26T00:00:00.000Z",
+  state: `card-state-${id}`,
+  action: `card-action-${id}`,
+  outcome: `card-outcome-${id}`,
+  stateEmbeddingVector: [],
+  actionEmbeddingVector: [],
+  outcomeEmbeddingVector: [],
+  relatedEpisodeIds,
+  createdAtIso: "2026-07-18T00:00:00.000Z",
+  lastUpdatedIso: "2026-07-18T00:00:00.000Z",
   ...overrides,
 });
 
-const splitCandidate = (
-  overrides: Partial<PolicySplitCandidate> = {},
-): PolicySplitCandidate => ({
-  id: "split-1",
-  botId: "ao",
-  episodeId: "ep-1",
-  targetPolicyCardId: "pc-1",
-  reason: "Current policy should be split.",
-  status: "open",
-  createdAtIso: "2026-05-26T00:00:00.000Z",
-  ...overrides,
+const buildHypothesis = (
+  episodes: EpisodeCase[],
+  label: string,
+): PolicyHypothesis => ({
+  state: `${label}-state`,
+  action: `${label}-action`,
+  outcome: `${label}-outcome`,
+  stateEmbeddingVector: [],
+  actionEmbeddingVector: [],
+  outcomeEmbeddingVector: [],
+  relatedEpisodeIds: episodes.map((episode) => episode.id),
 });
 
-const conversationChunk = (
-  overrides: Partial<ConversationChunk> = {},
-): ConversationChunk => ({
-  id: "chunk-1",
-  botId: "ao",
-  threadId: "thread-1",
-  turnRecordIds: ["turn-1", "turn-2"],
-  startCreatedAtIso: "2026-05-26T00:00:00.000Z",
-  endCreatedAtIso: "2026-05-26T00:01:00.000Z",
-  chunkText: "Turn 1\n[user] hello\n\nTurn 2\n[assistant] hi",
-  turnCount: 2,
-  tokenEstimate: 10,
-  createdAtIso: "2026-05-26T00:02:00.000Z",
-  ...overrides,
-});
-
-const testNormalizeChunkingConfigDefaults = async (): Promise<void> => {
+test("normalizeChunkingConfig applies defaults", () => {
   assert.deepEqual(normalizeChunkingConfig(undefined), {
     chunkSizeTurns: 6,
     chunkOverlapTurns: 2,
+    agentInitiatedResponseMaxHours: 24,
   });
-};
+});
 
-const testNormalizeChunkingConfigRejectsInvalidOverlap = async (): Promise<void> => {
-  assert.throws(
-    () =>
-      normalizeChunkingConfig({
-        chunkSizeTurns: 3,
-        chunkOverlapTurns: 3,
-      }),
-    /must be smaller than chunkSizeTurns/,
-  );
-};
-
-const testBuildConversationChunksUsesSlidingWindowOverlap = async (): Promise<void> => {
-  const turnRecords: TurnRecord[] = Array.from({ length: 5 }, (_, index) => ({
+test("buildConversationChunks uses overlap windows", () => {
+  const turns: TurnRecord[] = Array.from({ length: 5 }, (_, index) => ({
     id: `turn-${index + 1}`,
     botId: "ao",
     threadId: "thread-1",
-    createdAtIso: `2026-05-26T00:0${index}:00.000Z`,
+    createdAtIso: `2026-07-18T00:0${index}:00.000Z`,
     messages: [
       {
         role: "user",
         content: `message-${index + 1}`,
-        timestampIso: `2026-05-26T00:0${index}:00.000Z`,
+        timestampIso: `2026-07-18T00:0${index}:00.000Z`,
       },
     ],
   }));
 
-  const chunks = buildConversationChunks(turnRecords, {
+  const chunks = buildConversationChunks(turns, {
     chunkSizeTurns: 3,
     chunkOverlapTurns: 1,
   });
@@ -160,800 +123,554 @@ const testBuildConversationChunksUsesSlidingWindowOverlap = async (): Promise<vo
       ["turn-3", "turn-4", "turn-5"],
     ],
   );
-};
+});
 
-const testBuildConversationChunksKeepsLatestTurnsWhenInputTrimmed = async (): Promise<void> => {
-  const recentOnly = buildConversationChunks(
-    Array.from({ length: 4 }, (_, index) => ({
-      botId: "ao",
-      threadId: "thread-1",
-      createdAtIso: `2026-05-26T00:0${index + 6}:00.000Z`,
-      messages: [
-        {
-          role: "user",
-          content: `recent-${index + 1}`,
-          timestampIso: `2026-05-26T00:0${index + 6}:00.000Z`,
-        },
-      ],
-    })),
-    { chunkSizeTurns: 3, chunkOverlapTurns: 1 },
-  );
-
-  assert.equal(recentOnly[0]?.turnRecordIds.length, 3);
-};
-
-const testBuildConversationChunksGeneratesStableTurnIdsWhenMissing = async (): Promise<void> => {
-  const chunks = buildConversationChunks(
-    [
-      {
-        botId: "ao",
-        threadId: "thread-1",
-        createdAtIso: "2026-05-26T00:06:00.000Z",
-        messages: [
-          {
-            role: "user",
-            content: "recent-1",
-            timestampIso: "2026-05-26T00:06:00.000Z",
-          },
-        ],
-      },
-    ],
-    { chunkSizeTurns: 3, chunkOverlapTurns: 1 },
-  );
-
-  assert.equal(chunks[0]?.turnRecordIds.length, 1);
-  assert.match(chunks[0]?.turnRecordIds[0] ?? "", /^turn_/);
-};
-
-const testBuildPolicyQueryContextIncludesRecentTurns = async (): Promise<void> => {
-  const recentTurns: TurnRecord[] = [
+test("buildConversationChunks includes agent initiated turns only when a user responds in the window", () => {
+  const turns: TurnRecord[] = [
     {
+      id: "user-1",
       botId: "ao",
       threadId: "thread-1",
-      createdAtIso: "2026-05-26T00:00:00.000Z",
+      source: "user",
+      createdAtIso: "2026-07-18T00:00:00.000Z",
       messages: [
         {
           role: "user",
-          content: "I want a research framing.",
-          timestampIso: "2026-05-26T00:00:00.000Z",
+          content: "最初の相談",
+          timestampIso: "2026-07-18T00:00:00.000Z",
         },
         {
           role: "assistant",
-          content: "Here is a research framing.",
-          timestampIso: "2026-05-26T00:00:01.000Z",
+          content: "最初の回答",
+          timestampIso: "2026-07-18T00:00:01.000Z",
+        },
+      ],
+    },
+    {
+      id: "proactive-1",
+      botId: "ao",
+      threadId: "thread-1",
+      source: "simple_pomdp",
+      createdAtIso: "2026-07-18T01:00:00.000Z",
+      messages: [
+        {
+          role: "user",
+          content: "background instruction",
+          timestampIso: "2026-07-18T01:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          content: "補足すると、この観点もあります",
+          timestampIso: "2026-07-18T01:00:01.000Z",
+        },
+      ],
+    },
+    {
+      id: "proactive-2",
+      botId: "ao",
+      threadId: "thread-1",
+      source: "simple_pomdp",
+      createdAtIso: "2026-07-18T02:00:00.000Z",
+      messages: [
+        {
+          role: "user",
+          content: "background instruction",
+          timestampIso: "2026-07-18T02:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          content: "もう一点だけ共有します",
+          timestampIso: "2026-07-18T02:00:01.000Z",
+        },
+      ],
+    },
+    {
+      id: "user-2",
+      botId: "ao",
+      threadId: "thread-1",
+      source: "user",
+      createdAtIso: "2026-07-18T03:00:00.000Z",
+      messages: [
+        {
+          role: "user",
+          content: "それは気になります",
+          timestampIso: "2026-07-18T03:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          content: "では少し掘ります",
+          timestampIso: "2026-07-18T03:00:01.000Z",
+        },
+      ],
+    },
+    {
+      id: "proactive-3",
+      botId: "ao",
+      threadId: "thread-1",
+      source: "simple_pomdp",
+      createdAtIso: "2026-07-18T04:00:00.000Z",
+      messages: [
+        {
+          role: "user",
+          content: "background instruction",
+          timestampIso: "2026-07-18T04:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          content: "未応答の働きかけ",
+          timestampIso: "2026-07-18T04:00:01.000Z",
         },
       ],
     },
   ];
 
-  const context = buildPolicyQueryContext(
-    "Now I need an implementation decision.",
-    recentTurns,
-  );
+  const chunks = buildConversationChunks(turns, {
+    chunkSizeTurns: 4,
+    chunkOverlapTurns: 1,
+    agentInitiatedResponseMaxHours: 24,
+  });
+
+  assert.deepEqual(chunks[0]?.turnRecordIds, [
+    "user-1",
+    "proactive-1",
+    "proactive-2",
+    "user-2",
+  ]);
+  assert.doesNotMatch(chunks[0]?.chunkText ?? "", /background instruction/);
+  assert.match(chunks[0]?.chunkText ?? "", /source=simple_pomdp/);
+  assert.match(chunks[0]?.chunkText ?? "", /もう一点だけ共有します/);
+  assert.doesNotMatch(chunks[0]?.chunkText ?? "", /未応答の働きかけ/);
+});
+
+test("buildPolicyQueryContext includes current input and recent turns", () => {
+  const context = buildPolicyQueryContext("current ask", [
+    {
+      botId: "ao",
+      threadId: "thread-1",
+      createdAtIso: "2026-07-18T00:00:00.000Z",
+      messages: [
+        {
+          role: "user",
+          content: "older ask",
+          timestampIso: "2026-07-18T00:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          content: "older answer",
+          timestampIso: "2026-07-18T00:00:01.000Z",
+        },
+      ],
+    },
+  ]);
 
   assert.match(context, /Current user input:/);
   assert.match(context, /Recent conversation history:/);
-  assert.match(context, /\[user\] I want a research framing\./);
-};
+  assert.match(context, /\[assistant\] older answer/);
+});
 
-const testBuildPolicyQueryContextReturnsCurrentContextWithoutHistory = async (): Promise<void> => {
-  const context = buildPolicyQueryContext("plain current input", []);
-  assert.equal(context, "plain current input");
-};
-
-const testBuildPolicyQueryContextReturnsHistoryWithoutCurrentContext = async (): Promise<void> => {
-  const context = buildPolicyQueryContext("", [
+test("extractEpisodeCasesFromChunk extracts multiple episodes", async () => {
+  const llm = new JsonClientStub([
     {
-      botId: "ao",
-      threadId: "thread-1",
-      createdAtIso: "2026-05-26T00:00:00.000Z",
-      messages: [
+      episodes: [
         {
-          role: "user",
-          content: "I want a research framing.",
-          timestampIso: "2026-05-26T00:00:00.000Z",
+          state: "User compares webhook and polling.",
+          action: "Assistant enumerates tradeoffs.",
+          outcome: "User can choose an integration strategy.",
+        },
+        {
+          state: "User asks about failure handling.",
+          action: "Assistant proposes retries and alerting.",
+          outcome: "Operational risk is clarified.",
+        },
+      ],
+    },
+  ]);
+  const chunk: ConversationChunk = {
+    id: "chunk-1",
+    botId: "ao",
+    threadId: "thread-1",
+    turnRecordIds: ["turn-1"],
+    startCreatedAtIso: "2026-07-18T00:00:00.000Z",
+    endCreatedAtIso: "2026-07-18T00:01:00.000Z",
+    chunkText: "conversation",
+    turnCount: 1,
+    tokenEstimate: 10,
+    createdAtIso: "2026-07-18T00:02:00.000Z",
+  };
+
+  const episodes = await extractEpisodeCasesFromChunk(llm, chunk);
+
+  assert.equal(episodes.length, 2);
+  assert.equal(episodes[0]?.sourceChunkId, "chunk-1");
+  assert.equal(episodes[1]?.action, "Assistant proposes retries and alerting.");
+});
+
+test("extractEpisodeCasesFromChunk fills embeddings when embedder is provided", async () => {
+  const llm = new JsonClientStub([
+    {
+      episodes: [
+        {
+          state: "State text",
+          action: "Action text",
+          outcome: "Outcome text",
         },
       ],
     },
   ]);
 
-  assert.match(context, /^Recent conversation history:/);
-  assert.doesNotMatch(context, /Current user input:/);
-};
+  const episodes = await extractEpisodeCasesFromChunk(
+    llm,
+    {
+      id: "chunk-1",
+      botId: "ao",
+      threadId: "thread-1",
+      turnRecordIds: ["turn-1"],
+      startCreatedAtIso: "2026-07-18T00:00:00.000Z",
+      endCreatedAtIso: "2026-07-18T00:01:00.000Z",
+      chunkText: "conversation",
+      turnCount: 1,
+      tokenEstimate: 10,
+      createdAtIso: "2026-07-18T00:02:00.000Z",
+    },
+    async (text) => [text.length],
+  );
 
-const testBuildPolicyQueryContextRespectsTokenBudget = async (): Promise<void> => {
-  const recentTurns: TurnRecord[] = [
+  assert.deepEqual(episodes[0]?.stateEmbeddingVector, ["State text".length]);
+  assert.deepEqual(episodes[0]?.actionEmbeddingVector, ["Action text".length]);
+  assert.deepEqual(episodes[0]?.outcomeEmbeddingVector, ["Outcome text".length]);
+});
+
+test("buildPolicyHypothesisFromEpisodes normalizes state action outcome", async () => {
+  const llm = new JsonClientStub([
     {
-      botId: "ao",
-      threadId: "thread-1",
-      createdAtIso: "2026-05-26T00:00:00.000Z",
-      messages: [
-        {
-          role: "user",
-          content: "old history ".repeat(40),
-          timestampIso: "2026-05-26T00:00:00.000Z",
-        },
-      ],
+      state: "User is deciding an implementation approach.",
+      action: "Assistant compares concrete options with constraints.",
+      outcome: "A concrete next step becomes clear.",
     },
+  ]);
+
+  const result = await buildPolicyHypothesisFromEpisodes(llm, [
+    buildEpisode("ep-1"),
+    buildEpisode("ep-2"),
+  ]);
+
+  assert.equal(result.state, "User is deciding an implementation approach.");
+  assert.deepEqual(result.relatedEpisodeIds, ["ep-1", "ep-2"]);
+});
+
+test("buildPolicyHypothesisFromEpisodes fills embeddings when embedder is provided", async () => {
+  const llm = new JsonClientStub([
     {
-      botId: "ao",
-      threadId: "thread-1",
-      createdAtIso: "2026-05-26T00:01:00.000Z",
-      messages: [
-        {
-          role: "user",
-          content: "recent short history",
-          timestampIso: "2026-05-26T00:01:00.000Z",
-        },
-      ],
+      state: "State text",
+      action: "Action text",
+      outcome: "Outcome text",
     },
+  ]);
+
+  const result = await buildPolicyHypothesisFromEpisodes(
+    llm,
+    [buildEpisode("ep-1")],
+    async (text) => [text.length],
+  );
+
+  assert.deepEqual(result.stateEmbeddingVector, ["State text".length]);
+  assert.deepEqual(result.actionEmbeddingVector, ["Action text".length]);
+  assert.deepEqual(result.outcomeEmbeddingVector, ["Outcome text".length]);
+});
+
+test("buildPolicyHypothesisFromEpisodes sends only episode text fields to llm", async () => {
+  const llm = new JsonClientStub([
+    {
+      state: "Shared state",
+      action: "Shared action",
+      outcome: "Shared outcome",
+    },
+  ]);
+
+  await buildPolicyHypothesisFromEpisodes(llm, [
+    buildEpisode("ep-1", {
+      stateEmbeddingVector: [1, 2, 3],
+      actionEmbeddingVector: [4, 5, 6],
+      outcomeEmbeddingVector: [7, 8, 9],
+      relatedCardId: "pc-1",
+    }),
+  ]);
+
+  const payload = JSON.parse(llm.calls[0]?.userPrompt ?? "{}") as {
+    episodes: unknown[];
+  };
+  assert.deepEqual(payload.episodes, [
+    {
+      state: "state-ep-1",
+      action: "action-ep-1",
+      outcome: "outcome-ep-1",
+    },
+  ]);
+});
+
+test("decidePolicyCardUpdate sends only decision fields to llm", async () => {
+  const llm = new JsonClientStub([
+    {
+      decision: "merge",
+      reason: "Same behavior",
+      targetPolicyCardId: "pc-1",
+    },
+  ]);
+
+  await decidePolicyCardUpdate(
+    llm,
+    buildEpisode("ep-1", {
+      stateEmbeddingVector: [1],
+      actionEmbeddingVector: [2],
+      outcomeEmbeddingVector: [3],
+    }),
+    [
+      buildCard("pc-1", ["ep-older"], {
+        stateEmbeddingVector: [4],
+        actionEmbeddingVector: [5],
+        outcomeEmbeddingVector: [6],
+      }),
+    ],
+  );
+
+  const payload = JSON.parse(llm.calls[0]?.userPrompt ?? "{}") as {
+    episode: unknown;
+    existingPolicyCards: unknown[];
+  };
+  assert.deepEqual(payload.episode, {
+    state: "state-ep-1",
+    action: "action-ep-1",
+    outcome: "outcome-ep-1",
+  });
+  assert.deepEqual(payload.existingPolicyCards, [
+    {
+      id: "pc-1",
+      state: "card-state-pc-1",
+      action: "card-action-pc-1",
+      outcome: "card-outcome-pc-1",
+    },
+  ]);
+});
+
+test("filterApplicablePolicyCards selects ids returned by the model", async () => {
+  const llm = new JsonClientStub([["pc-2"]]);
+  const cards = [
+    buildCard("pc-1", []),
+    buildCard("pc-2", []),
   ];
 
-  const context = buildPolicyQueryContext("current input", recentTurns, 40);
-
-  assert.doesNotMatch(context, /old history/);
-  assert.match(context, /recent short history/);
-};
-
-const testExtractEpisodeCaseNormalizesFeedbackSignals = async (): Promise<void> => {
-  const llm = new OllamaClientStub({
-    stateLabel: " operations support ",
-    stateDescription: " User asks for operational guidance. ",
-    actionLabel: " give runbook ",
-    actionDescription: " Provide a small runbook. ",
-    outcome: " User can proceed. ",
-    outcomeAssessment: {
-      overall: "positive",
-      score: 1,
-      naturalLanguageJudgement: " User can continue. ",
-      updateHint: "strengthen",
-    },
-    feedbackSignals: [
-      {
-        type: "unknown_type",
-        text: " user corrected the framing ",
-        strength: "very_high",
-        target: "mystery_target",
-        updateHint: "mystery_hint",
-      },
-      {
-        type: "preference",
-        text: "   ",
-        strength: "low",
-        target: "policy",
-        updateHint: "strengthen",
-      },
-    ],
-    policyUpdateNote: " Keep answers operational. ",
-  });
-
-  const result = await extractEpisodeCase(llm as never, turnRecord);
-
-  assert.equal(result.stateLabel, "operations support");
-  assert.equal(result.feedbackSignals.length, 1);
-  assert.deepEqual(result.feedbackSignals[0], {
-    type: "correction",
-    text: "user corrected the framing",
-    strength: "medium",
-    target: "unknown",
-    updateHint: "no_change",
-  });
-};
-
-const testExtractEpisodeCaseRejectsMissingRequiredField = async (): Promise<void> => {
-  const llm = new OllamaClientStub({
-    stateLabel: "",
-    stateDescription: "desc",
-    actionLabel: "action",
-    actionDescription: "action desc",
-    outcome: "outcome",
-    outcomeAssessment: {
-      overall: "positive",
-      score: 1,
-      naturalLanguageJudgement: "judgement",
-      updateHint: "strengthen",
-    },
-    feedbackSignals: [],
-    policyUpdateNote: "note",
-  });
-
-  await assert.rejects(
-    () => extractEpisodeCase(llm as never, turnRecord),
-    /empty stateLabel/,
-  );
-};
-
-const testExtractEpisodeCaseNormalizesOutcomeAssessment = async (): Promise<void> => {
-  const llm = new OllamaClientStub({
-    stateLabel: "operations support",
-    stateDescription: "User asks for operational guidance.",
-    actionLabel: "give runbook",
-    actionDescription: "Provide a small runbook.",
-    outcome: "User can proceed.",
-    outcomeAssessment: {
-      overall: "great",
-      score: 9,
-      naturalLanguageJudgement: " user stayed engaged but the case is ambiguous ",
-      updateHint: "mystery_hint",
-    },
-    feedbackSignals: [],
-    policyUpdateNote: "Keep answers operational.",
-  });
-
-  const result = await extractEpisodeCase(llm as never, turnRecord);
-
-  assert.deepEqual(result.outcomeAssessment, {
-    overall: "uncertain",
-    score: 0,
-    naturalLanguageJudgement: "user stayed engaged but the case is ambiguous",
-    updateHint: "no_change",
-  });
-};
-
-const testExtractEpisodeCaseFromChunkUsesChunkIdentity = async (): Promise<void> => {
-  const llm = new OllamaClientStub({
-    stateLabel: "ops chunk",
-    stateDescription: "Chunk-level context",
-    actionLabel: "respond",
-    actionDescription: "Respond based on chunk",
-    outcome: "Resolved",
-    outcomeAssessment: {
-      overall: "positive",
-      score: 1,
-      naturalLanguageJudgement: "Chunk shows success.",
-      updateHint: "strengthen",
-    },
-    feedbackSignals: [],
-    policyUpdateNote: "Keep this pattern.",
-  });
-
-  const result = await extractEpisodeCaseFromChunk(
-    llm as never,
-    conversationChunk({
-      botId: "aka",
-      threadId: "thread-9",
-    }),
-  );
-
-  assert.equal(result.botId, "aka");
-  assert.equal(result.threadId, "thread-9");
-  assert.equal(result.sourceChunkId, "chunk-1");
-};
-
-const testExtractEpisodeCaseFallsBackToOutcomeWhenJudgementMissing = async (): Promise<void> => {
-  const llm = new OllamaClientStub({
-    stateLabel: "ops chunk",
-    stateDescription: "Chunk-level context",
-    actionLabel: "respond",
-    actionDescription: "Respond based on chunk",
-    outcome: "Resolved with user confirmation.",
-    outcomeAssessment: {
-      overall: "positive",
-      score: 1,
-      updateHint: "strengthen",
-    },
-    feedbackSignals: [],
-    policyUpdateNote: "keep current policy",
-  });
-
-  const result = await extractEpisodeCase(llm as never, turnRecord);
-  assert.equal(
-    result.outcomeAssessment.naturalLanguageJudgement,
-    "Resolved with user confirmation.",
-  );
-};
-
-const testBuildPolicyCardSkipsMergeOnStrongSplitSignal = async (): Promise<void> => {
-  const llm = new OllamaClientStub({
-    title: "should not be used",
-    appliesWhen: "unused",
-    recommendedBehavior: "unused",
-    avoidBehavior: "unused",
-    distinctionNotes: "unused",
-    confidence: "high",
-  });
-
-  const result = await buildPolicyCardFromEpisodes(llm as never, "ao", [
-    episode({
-      id: "ep-1",
-      feedbackSignals: [
-        {
-          type: "distinction_request",
-          text: "Research questions and implementation decisions must be separated.",
-          strength: "high",
-          target: "state",
-          updateHint: "split",
-        },
-      ],
-    }),
-    episode({
-      id: "ep-2",
-      stateLabel: "research positioning",
-      stateDescription: "User wants research positioning.",
-    }),
-  ]);
-
-  assert.equal(result, null);
-};
-
-const testBuildPolicyCardNormalizesConfidence = async (): Promise<void> => {
-  const llm = new OllamaClientStub({
-    title: " implementation support ",
-    appliesWhen: " concrete implementation questions ",
-    recommendedBehavior: " answer concretely ",
-    avoidBehavior: " stay abstract ",
-    distinctionNotes: " separate from research mode ",
-    confidence: "very_high",
-  });
-
-  const result = await buildPolicyCardFromEpisodes(llm as never, "ao", [episode()]);
-
-  assert.ok(result);
-  assert.equal(result.confidence, "low");
-  assert.equal(result.title, "implementation support");
-};
-
-const testBuildPolicyCardUsesDeterministicIdForSameEpisode = async (): Promise<void> => {
-  const llm = new OllamaClientStub({
-    title: "implementation support",
-    appliesWhen: "implementation questions",
-    recommendedBehavior: "answer concretely",
-    avoidBehavior: "stay abstract",
-    distinctionNotes: "separate from research mode",
-    confidence: "medium",
-  });
-
-  const first = await buildPolicyCardFromEpisodes(llm as never, "ao", [
-    episode({ id: "ep-stable" }),
-  ]);
-  const second = await buildPolicyCardFromEpisodes(llm as never, "ao", [
-    episode({ id: "ep-stable" }),
-  ]);
-
-  assert.equal(first?.id, second?.id);
-};
-
-const testDecidePolicyCardUpdateReturnsCreateNewWithoutExistingCards = async (): Promise<void> => {
-  const llm = new OllamaClientStub({
-    decision: "merge",
-    reason: "unused because no cards exist",
-  });
-
-  const result = await decidePolicyCardUpdate(llm as never, episode(), []);
-
-  assert.deepEqual(result, {
-    decision: "create_new",
-    reason: "No existing policy cards are available for this bot.",
-  });
-};
-
-const testDecidePolicyCardUpdateUsesOutcomeAssessmentCreateNew = async (): Promise<void> => {
-  const llm = new OllamaClientStub({
-    decision: "merge",
-    reason: "unused because outcome assessment takes precedence",
-  });
-
-  const result = await decidePolicyCardUpdate(
-    llm as never,
-    episode({
-      outcomeAssessment: {
-        overall: "mixed",
-        score: 0,
-        naturalLanguageJudgement: "A new operating mode is emerging.",
-        updateHint: "create_new",
-      },
-    }),
-    [policyCard({ id: "pc-1" })],
-  );
-
-  assert.deepEqual(result, {
-    decision: "create_new",
-    reason: "Outcome assessment suggests creating a new policy card.",
-  });
-};
-
-const testDecidePolicyCardUpdateUsesNegativeOutcomeAsSplitSignal = async (): Promise<void> => {
-  const llm = new OllamaClientStub({
-    decision: "merge",
-    reason: "unused because negative outcome takes precedence",
-  });
-
-  const result = await decidePolicyCardUpdate(
-    llm as never,
-    episode({
-      outcomeAssessment: {
-        overall: "negative",
-        score: -2,
-        naturalLanguageJudgement: "The current policy caused a clear mismatch.",
-        updateHint: "weaken",
-      },
-    }),
-    [policyCard({ id: "pc-1" })],
-  );
-
-  assert.deepEqual(result, {
-    decision: "split_existing",
-    reason: "Outcome assessment indicates the current policy likely failed.",
-    targetPolicyCardId: "pc-1",
-  });
-};
-
-const testDecidePolicyCardUpdateTargetsSingleExistingCardOnStrongSplit = async (): Promise<void> => {
-  const llm = new OllamaClientStub({
-    decision: "merge",
-    reason: "unused because strong split takes precedence",
-  });
-
-  const result = await decidePolicyCardUpdate(
-    llm as never,
-    episode({
-      feedbackSignals: [
-        {
-          type: "distinction_request",
-          text: "This should be separated from the current policy.",
-          strength: "high",
-          target: "state",
-          updateHint: "split",
-        },
-      ],
-    }),
-    [policyCard({ id: "pc-1" })],
-  );
-
-  assert.deepEqual(result, {
-    decision: "split_existing",
-    reason: "Episode contains a strong distinction_request split signal.",
-    targetPolicyCardId: "pc-1",
-  });
-};
-
-const testDecidePolicyCardUpdateRejectsUnknownMergeTarget = async (): Promise<void> => {
-  const llm = new OllamaClientStub({
-    decision: "merge",
-    reason: "Looks similar to an existing card.",
-    targetPolicyCardId: "pc-missing",
-    updatedPolicyCard: {
-      title: "Merged card",
-      appliesWhen: "When the user asks for concrete implementation help.",
-      recommendedBehavior: "Answer concretely.",
-      avoidBehavior: "Avoid abstraction.",
-      distinctionNotes: "Separate from research mode.",
-      confidence: "high",
-    },
-  });
-
-  const result = await decidePolicyCardUpdate(llm as never, episode(), [
-    policyCard({ id: "pc-1" }),
-  ]);
-
-  assert.equal(result.decision, "merge");
-  assert.equal(result.targetPolicyCardId, undefined);
-  assert.equal(result.updatedPolicyCard, undefined);
-};
-
-const testFilterApplicablePolicyCardsIgnoresUnknownIds = async (): Promise<void> => {
-  const llm = new OllamaClientStub({
-    applicableIds: ["pc-1", "pc-missing"],
-  });
-
   const result = await filterApplicablePolicyCards(
-    llm as never,
-    "The user asks for a concrete implementation decision.",
-    [
-      policyCard({ id: "pc-1" }),
-      policyCard({ id: "pc-2", title: "Research positioning" }),
-    ],
+    llm,
+    "current implementation question",
+    cards,
   );
 
   assert.deepEqual(
     result.map((card) => card.id),
-    ["pc-1"],
+    ["pc-2"],
   );
-};
+});
 
-const testOllamaClientParsesFencedJson = async (): Promise<void> => {
-  const client = new OllamaClient(
-    "http://ollama.local",
-    "qwen3",
-    undefined,
-    async () =>
-      new Response(
-        JSON.stringify({
-          message: {
-            content: '```json\n{"applicableIds":["pc-1"]}\n```',
-          },
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      ),
-  );
-
-  const result = await client.generateJson<{ applicableIds: string[] }>(
-    "system",
-    "user",
-  );
-  assert.deepEqual(result, { applicableIds: ["pc-1"] });
-};
-
-const testOllamaClientParsesJsonWithLeadingNoise = async (): Promise<void> => {
-  const client = new OllamaClient(
-    "http://ollama.local",
-    "qwen3",
-    undefined,
-    async () =>
-      new Response(
-        JSON.stringify({
-          message: {
-            content:
-              'Here is the result.\n```json\n["pc-1","pc-2"]\n```\nUse it carefully.',
-          },
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      ),
-  );
-
-  const result = await client.generateJson<string[]>("system", "user");
-  assert.deepEqual(result, ["pc-1", "pc-2"]);
-};
-
-const testMergePolicyCardUpdateAppendsEvidenceAndDistinctionNotes = async (): Promise<void> => {
-  const result = mergePolicyCardUpdate(
-    policyCard({
-      distinctionNotes: "Existing distinction note.",
-      evidenceEpisodeIds: ["ep-1"],
-      confidence: "medium",
-    }),
-    {
-      title: "Merged policy",
-      appliesWhen: "When implementation advice is needed.",
-      recommendedBehavior: "Answer concretely.",
-      avoidBehavior: "Avoid vague abstraction.",
-      distinctionNotes: "Updated distinction note.",
-      confidence: "medium",
-    },
-    episode({
-      id: "ep-2",
-      feedbackSignals: [
-        {
-          type: "distinction_request",
-          text: "Separate implementation from research framing.",
-          strength: "high",
-          target: "distinction",
-          updateHint: "split",
-        },
-      ],
-    }),
-  );
-
-  assert.deepEqual(result.evidenceEpisodeIds, ["ep-1", "ep-2"]);
-  assert.match(result.distinctionNotes, /Existing distinction note\./);
-  assert.match(result.distinctionNotes, /Updated distinction note\./);
-  assert.match(result.distinctionNotes, /Separate implementation from research framing\./);
-};
-
-const testMergePolicyCardUpdateAdjustsConfidenceFromEpisodeOutcome = async (): Promise<void> => {
-  const raised = mergePolicyCardUpdate(
-    policyCard({ confidence: "medium" }),
-    {
-      title: "Merged policy",
-      appliesWhen: "When implementation advice is needed.",
-      recommendedBehavior: "Answer concretely.",
-      avoidBehavior: "Avoid vague abstraction.",
-      distinctionNotes: "",
-      confidence: "medium",
-    },
-    episode({
-      id: "ep-2",
-      outcomeAssessment: {
-        overall: "positive",
-        score: 1,
-        naturalLanguageJudgement: "The policy worked well.",
-        updateHint: "strengthen",
-      },
-      feedbackSignals: [
-        {
-          type: "achievement",
-          text: "The user completed the task.",
-          strength: "medium",
-          target: "policy",
-          updateHint: "strengthen",
-        },
-      ],
-    }),
-  );
-
-  const lowered = mergePolicyCardUpdate(
-    policyCard({ confidence: "medium" }),
-    {
-      title: "Merged policy",
-      appliesWhen: "When implementation advice is needed.",
-      recommendedBehavior: "Answer concretely.",
-      avoidBehavior: "Avoid vague abstraction.",
-      distinctionNotes: "",
-      confidence: "medium",
-    },
-    episode({
-      id: "ep-3",
-      outcomeAssessment: {
-        overall: "negative",
-        score: -1,
-        naturalLanguageJudgement: "The policy likely mismatched the situation.",
-        updateHint: "weaken",
-      },
-      feedbackSignals: [
-        {
-          type: "confusion",
-          text: "The user was confused.",
-          strength: "medium",
-          target: "policy",
-          updateHint: "weaken",
-        },
-      ],
-    }),
-  );
-
-  assert.equal(raised.confidence, "high");
-  assert.equal(lowered.confidence, "low");
-};
-
-const testApplyResolvedSplitCandidateUpdatesTargetPolicyCard = async (): Promise<void> => {
-  const updated = applyResolvedSplitCandidate(
-    policyCard({
-      confidence: "high",
-      distinctionNotes: "Different from research positioning questions.",
-      evidenceEpisodeIds: ["ep-1", "ep-2"],
-    }),
-    episode({ id: "ep-1" }),
-    splitCandidate({
-      reason: "Implementation decision and research framing should be separated.",
-      status: "resolved",
-    }),
-  );
-
-  assert.equal(updated.confidence, "medium");
-  assert.deepEqual(updated.evidenceEpisodeIds, ["ep-2"]);
-  assert.match(updated.distinctionNotes, /Split boundary:/);
-};
-
-const testTransitionPolicySplitCandidateResolvesOpenCandidate = async (): Promise<void> => {
-  const result = transitionPolicySplitCandidate(splitCandidate(), "resolved");
-
-  assert.deepEqual(result, {
-    ...splitCandidate(),
-    status: "resolved",
+test("mergePolicyCardUpdate replaces content and unions episode ids", () => {
+  const card = buildCard("pc-1", ["ep-1"], {
+    state: "old-state",
+    action: "old-action",
+    outcome: "old-outcome",
   });
-};
 
-const testTransitionPolicySplitCandidateRejectsClosedCandidate = async (): Promise<void> => {
-  assert.throws(
-    () =>
-      transitionPolicySplitCandidate(
-        splitCandidate({ status: "ignored" }),
-        "resolved",
+  const updated = mergePolicyCardUpdate(card, {
+    state: "new-state",
+    action: "new-action",
+    outcome: "new-outcome",
+    stateEmbeddingVector: [],
+    actionEmbeddingVector: [],
+    outcomeEmbeddingVector: [],
+    relatedEpisodeIds: ["ep-1", "ep-2"],
+  });
+
+  assert.equal(updated.state, "new-state");
+  assert.deepEqual(updated.relatedEpisodeIds, ["ep-1", "ep-2"]);
+});
+
+test("policyCardFlow merges into an existing card", async () => {
+  const seed = buildEpisode("ep-seed");
+  const incoming = buildEpisode("ep-new");
+  const card = buildCard("pc-1", ["ep-seed"]);
+  const ports: PolicyCardFlowPorts = {
+    buildHypothesis: async (episodes) => buildHypothesis(episodes, "merged"),
+    searchCards: async () => [card],
+    evaluateEpisodes: async () => ({ consistent: true, clear: true }),
+    evaluateSplit: async () => ({ consistent: false, clear: false }),
+    clusterByState: async () => [],
+    clusterByAction: async () => [],
+  };
+
+  const result = await applyEpisodeToPolicyCardFlow({
+    botId: "ao",
+    newEpisode: incoming,
+    existingCards: [card],
+    episodesByCardId: new Map([[card.id, [seed]]]),
+    unassignedEpisodes: [],
+    searchLimit: 3,
+    ports,
+  });
+
+  assert.equal(result.outcome, "merged");
+  assert.equal(result.updatedCards[0].id, "pc-1");
+  assert.deepEqual(result.updatedCards[0].relatedEpisodeIds, ["ep-seed", "ep-new"]);
+  assert.equal(result.stats.episodeEvalCalls, 1);
+});
+
+test("policyCardFlow creates a new card from unassigned cluster", async () => {
+  const older = buildEpisode("ep-older", {
+    state: "User asks for rollout guidance.",
+    action: "Assistant proposes deployment steps.",
+    outcome: "User gets an operational plan.",
+  });
+  const incoming = buildEpisode("ep-new", {
+    state: "User asks for rollout guidance.",
+    action: "Assistant proposes deployment steps.",
+    outcome: "User gets a validated rollout path.",
+  });
+  const ports: PolicyCardFlowPorts = {
+    buildHypothesis: async (episodes) => buildHypothesis(episodes, "created"),
+    searchCards: async () => [],
+    evaluateEpisodes: async () => ({ consistent: true, clear: true }),
+    evaluateSplit: async () => ({ consistent: false, clear: false }),
+    clusterByState: async (episodes) => [episodes],
+    clusterByAction: async (episodes) => [episodes],
+  };
+
+  const result = await applyEpisodeToPolicyCardFlow({
+    botId: "ao",
+    newEpisode: incoming,
+    existingCards: [],
+    episodesByCardId: new Map(),
+    unassignedEpisodes: [older],
+    searchLimit: 3,
+    ports,
+  });
+
+  assert.equal(result.outcome, "created");
+  assert.deepEqual(result.assignedEpisodeIds.sort(), ["ep-new", "ep-older"]);
+  assert.equal(result.updatedCards[0].relatedEpisodeIds.length, 2);
+});
+
+test("policyCardFlow splits a crowded card into two groups", async () => {
+  const research = buildEpisode("ep-research", {
+    state: "User wants research framing.",
+    action: "Assistant frames the problem space.",
+    outcome: "User gets a decision frame.",
+  });
+  const implementation = buildEpisode("ep-impl", {
+    state: "User wants implementation detail.",
+    action: "Assistant suggests concrete steps.",
+    outcome: "User can implement immediately.",
+  });
+  const incoming = buildEpisode("ep-new", {
+    state: "User wants research framing.",
+    action: "Assistant frames the problem space.",
+    outcome: "The framing stays separate from implementation work.",
+  });
+  const card = buildCard("pc-1", ["ep-research", "ep-impl"]);
+  const ports: PolicyCardFlowPorts = {
+    buildHypothesis: async (episodes) =>
+      buildHypothesis(
+        episodes,
+        episodes.some((episode) => episode.id === "ep-impl")
+          ? "implementation"
+          : "research",
       ),
-    /already ignored/,
-  );
-};
+    searchCards: async () => [card],
+    evaluateEpisodes: async () => ({ consistent: false, clear: false }),
+    evaluateSplit: async () => ({ consistent: true, clear: true }),
+    clusterByState: async () => [],
+    clusterByAction: async () => [[research, incoming], [implementation]],
+  };
 
-test("normalizeChunkingConfig defaults", testNormalizeChunkingConfigDefaults);
-test(
-  "normalizeChunkingConfig rejects invalid overlap",
-  testNormalizeChunkingConfigRejectsInvalidOverlap,
-);
-test(
-  "buildConversationChunks uses sliding window overlap",
-  testBuildConversationChunksUsesSlidingWindowOverlap,
-);
-test(
-  "buildConversationChunks keeps latest turns when input trimmed",
-  testBuildConversationChunksKeepsLatestTurnsWhenInputTrimmed,
-);
-test(
-  "buildConversationChunks generates stable turn ids when missing",
-  testBuildConversationChunksGeneratesStableTurnIdsWhenMissing,
-);
-test(
-  "buildPolicyQueryContext includes recent turns",
-  testBuildPolicyQueryContextIncludesRecentTurns,
-);
-test(
-  "buildPolicyQueryContext returns current context without history",
-  testBuildPolicyQueryContextReturnsCurrentContextWithoutHistory,
-);
-test(
-  "buildPolicyQueryContext returns history without current context",
-  testBuildPolicyQueryContextReturnsHistoryWithoutCurrentContext,
-);
-test(
-  "buildPolicyQueryContext respects token budget",
-  testBuildPolicyQueryContextRespectsTokenBudget,
-);
-test(
-  "extractEpisodeCase normalizes feedback signals",
-  testExtractEpisodeCaseNormalizesFeedbackSignals,
-);
-test(
-  "extractEpisodeCase rejects missing required field",
-  testExtractEpisodeCaseRejectsMissingRequiredField,
-);
-test(
-  "extractEpisodeCase normalizes outcome assessment",
-  testExtractEpisodeCaseNormalizesOutcomeAssessment,
-);
-test(
-  "extractEpisodeCaseFromChunk uses chunk identity",
-  testExtractEpisodeCaseFromChunkUsesChunkIdentity,
-);
-test(
-  "extractEpisodeCase falls back to outcome when judgement missing",
-  testExtractEpisodeCaseFallsBackToOutcomeWhenJudgementMissing,
-);
-test(
-  "buildPolicyCard skips merge on strong split signal",
-  testBuildPolicyCardSkipsMergeOnStrongSplitSignal,
-);
-test(
-  "buildPolicyCard normalizes confidence",
-  testBuildPolicyCardNormalizesConfidence,
-);
-test(
-  "buildPolicyCard uses deterministic id for same episode",
-  testBuildPolicyCardUsesDeterministicIdForSameEpisode,
-);
-test(
-  "decidePolicyCardUpdate returns create new without existing cards",
-  testDecidePolicyCardUpdateReturnsCreateNewWithoutExistingCards,
-);
-test(
-  "decidePolicyCardUpdate uses outcome assessment create new",
-  testDecidePolicyCardUpdateUsesOutcomeAssessmentCreateNew,
-);
-test(
-  "decidePolicyCardUpdate uses negative outcome as split signal",
-  testDecidePolicyCardUpdateUsesNegativeOutcomeAsSplitSignal,
-);
-test(
-  "decidePolicyCardUpdate targets single existing card on strong split",
-  testDecidePolicyCardUpdateTargetsSingleExistingCardOnStrongSplit,
-);
-test(
-  "decidePolicyCardUpdate rejects unknown merge target",
-  testDecidePolicyCardUpdateRejectsUnknownMergeTarget,
-);
-test(
-  "filterApplicablePolicyCards ignores unknown ids",
-  testFilterApplicablePolicyCardsIgnoresUnknownIds,
-);
-test(
-  "OllamaClient parses fenced json",
-  testOllamaClientParsesFencedJson,
-);
-test(
-  "OllamaClient parses json with leading noise",
-  testOllamaClientParsesJsonWithLeadingNoise,
-);
-test(
-  "mergePolicyCardUpdate appends evidence and distinction notes",
-  testMergePolicyCardUpdateAppendsEvidenceAndDistinctionNotes,
-);
-test(
-  "mergePolicyCardUpdate adjusts confidence from episode outcome",
-  testMergePolicyCardUpdateAdjustsConfidenceFromEpisodeOutcome,
-);
-test(
-  "applyResolvedSplitCandidate updates target policy card",
-  testApplyResolvedSplitCandidateUpdatesTargetPolicyCard,
-);
-test(
-  "transitionPolicySplitCandidate resolves open candidate",
-  testTransitionPolicySplitCandidateResolvesOpenCandidate,
-);
-test(
-  "transitionPolicySplitCandidate rejects closed candidate",
-  testTransitionPolicySplitCandidateRejectsClosedCandidate,
-);
+  const result = await applyEpisodeToPolicyCardFlow({
+    botId: "ao",
+    newEpisode: incoming,
+    existingCards: [card],
+    episodesByCardId: new Map([[card.id, [research, implementation]]]),
+    unassignedEpisodes: [],
+    searchLimit: 3,
+    ports,
+  });
+
+  assert.equal(result.outcome, "split");
+  assert.equal(result.updatedCards[0].id, "pc-1");
+  assert.deepEqual(result.updatedCards[0].relatedEpisodeIds, ["ep-impl"]);
+  assert.deepEqual(
+    [...result.updatedCards[1].relatedEpisodeIds].sort(),
+    ["ep-new", "ep-research"],
+  );
+  assert.equal(result.stats.splitEvalCalls, 1);
+});
+
+test("policyCardFlow prunes supersets after a failed eval", async () => {
+  const ep1 = buildEpisode("ep-1", { state: "same", action: "same" });
+  const ep2 = buildEpisode("ep-2", { state: "same", action: "same" });
+  const incoming = buildEpisode("ep-3", { state: "same", action: "same" });
+  const evaluations: PolicyEvaluation[] = [{ consistent: false, clear: false }];
+  let calls = 0;
+  const cache = createPolicyCardFlowCache();
+  const ports: PolicyCardFlowPorts = {
+    buildHypothesis: async (episodes) => buildHypothesis(episodes, "pruned"),
+    searchCards: async () => [],
+    evaluateEpisodes: async () => {
+      calls += 1;
+      return evaluations[0]!;
+    },
+    evaluateSplit: async () => ({ consistent: false, clear: false }),
+    clusterByState: async () => [[ep1, ep2, incoming]],
+    clusterByAction: async () => [[ep1, incoming], [ep1, ep2, incoming]],
+  };
+
+  const result = await applyEpisodeToPolicyCardFlow({
+    botId: "ao",
+    newEpisode: incoming,
+    existingCards: [],
+    episodesByCardId: new Map(),
+    unassignedEpisodes: [ep1, ep2],
+    searchLimit: 3,
+    ports,
+    cache,
+  });
+
+  assert.equal(result.outcome, "unassigned");
+  assert.equal(calls, 1);
+  assert.equal(result.stats.episodeEvalCalls, 1);
+  assert.equal(result.stats.cacheHits, 1);
+});
+
+test("policyCardFlow returns unassigned on recoverable llm error", async () => {
+  const incoming = buildEpisode("ep-new");
+  const ports: PolicyCardFlowPorts = {
+    buildHypothesis: async () => {
+      throw new PolicyFlowRecoverableError("llm failed");
+    },
+    searchCards: async () => [],
+    evaluateEpisodes: async () => ({ consistent: true, clear: true }),
+    evaluateSplit: async () => ({ consistent: true, clear: true }),
+    clusterByState: async () => [],
+    clusterByAction: async () => [],
+  };
+
+  const result = await applyEpisodeToPolicyCardFlow({
+    botId: "ao",
+    newEpisode: incoming,
+    existingCards: [],
+    episodesByCardId: new Map(),
+    unassignedEpisodes: [],
+    searchLimit: 3,
+    ports,
+  });
+
+  assert.equal(result.outcome, "unassigned");
+  assert.deepEqual(result.updatedCards, []);
+  assert.deepEqual(result.assignedEpisodeIds, []);
+  if (result.outcome === "unassigned") {
+    assert.equal(result.recoverableError, true);
+  }
+});
