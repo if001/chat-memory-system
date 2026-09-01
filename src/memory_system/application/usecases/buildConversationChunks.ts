@@ -131,7 +131,12 @@ const buildChunkableTurns = (
     const searchStart = Math.max(0, index - config.chunkSizeTurns);
     for (let candidateIndex = searchStart; candidateIndex < index; candidateIndex += 1) {
       const candidate = sortedTurns[candidateIndex];
-      if (!candidate || candidate.kind !== "proactive") {
+      if (
+        !candidate ||
+        candidate.kind !== "proactive" ||
+        !candidate.sourceInteractionId ||
+        candidate.sourceInteractionId !== turn.sourceInteractionId
+      ) {
         continue;
       }
       if (responseAt - Date.parse(candidate.createdAtIso) <= maxHoursMs) {
@@ -141,6 +146,9 @@ const buildChunkableTurns = (
   });
 
   return sortedTurns.flatMap((turn) => {
+    if (turn.kind === "delegation") {
+      return [];
+    }
     if (turn.kind !== "proactive") {
       return [turn];
     }

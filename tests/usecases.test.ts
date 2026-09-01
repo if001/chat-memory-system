@@ -7,7 +7,10 @@ import {
 } from "../src/memory_system/application/usecases/buildConversationChunks";
 import { buildPolicyQueryContext } from "../src/memory_system/application/usecases/buildPolicyQueryContext";
 import { decidePolicyCardUpdate } from "../src/memory_system/application/usecases/decidePolicyCardUpdate";
-import { extractEpisodeCasesFromChunk } from "../src/memory_system/application/usecases/extractEpisodeCase";
+import {
+  extractEpisodeCases,
+  extractEpisodeCasesFromChunk,
+} from "../src/memory_system/application/usecases/extractEpisodeCase";
 import { filterApplicablePolicyCards } from "../src/memory_system/application/usecases/filterApplicablePolicyCards";
 import { mergePolicyCardUpdate } from "../src/memory_system/application/usecases/mergePolicyCardUpdate";
 import {
@@ -101,6 +104,7 @@ test("buildConversationChunks uses overlap windows", () => {
     id: `turn-${index + 1}`,
     botId: "ao",
     threadId: "thread-1",
+    kind: "human",
     createdAtIso: `2026-07-18T00:0${index}:00.000Z`,
     messages: [
       {
@@ -151,6 +155,7 @@ test("buildConversationChunks includes agent initiated turns only when a user re
       botId: "ao",
       threadId: "thread-1",
       kind: "proactive",
+      sourceInteractionId: "interaction-1",
       createdAtIso: "2026-07-18T01:00:00.000Z",
       messages: [
         {
@@ -170,6 +175,7 @@ test("buildConversationChunks includes agent initiated turns only when a user re
       botId: "ao",
       threadId: "thread-1",
       kind: "proactive",
+      sourceInteractionId: "interaction-2",
       createdAtIso: "2026-07-18T02:00:00.000Z",
       messages: [
         {
@@ -189,6 +195,7 @@ test("buildConversationChunks includes agent initiated turns only when a user re
       botId: "ao",
       threadId: "thread-1",
       kind: "human",
+      sourceInteractionId: "interaction-2",
       createdAtIso: "2026-07-18T03:00:00.000Z",
       messages: [
         {
@@ -200,6 +207,20 @@ test("buildConversationChunks includes agent initiated turns only when a user re
           role: "assistant",
           content: "では少し掘ります",
           timestampIso: "2026-07-18T03:00:01.000Z",
+        },
+      ],
+    },
+    {
+      id: "delegation-1",
+      botId: "ao",
+      threadId: "thread-1",
+      kind: "delegation",
+      createdAtIso: "2026-07-18T03:30:00.000Z",
+      messages: [
+        {
+          role: "user",
+          content: "internal delegation instruction",
+          timestampIso: "2026-07-18T03:30:00.000Z",
         },
       ],
     },
@@ -232,7 +253,6 @@ test("buildConversationChunks includes agent initiated turns only when a user re
 
   assert.deepEqual(chunks[0]?.turnRecordIds, [
     "user-1",
-    "proactive-1",
     "proactive-2",
     "user-2",
   ]);
@@ -240,6 +260,27 @@ test("buildConversationChunks includes agent initiated turns only when a user re
   assert.match(chunks[0]?.chunkText ?? "", /kind=proactive/);
   assert.match(chunks[0]?.chunkText ?? "", /もう一点だけ共有します/);
   assert.doesNotMatch(chunks[0]?.chunkText ?? "", /未応答の働きかけ/);
+  assert.doesNotMatch(chunks[0]?.chunkText ?? "", /internal delegation/);
+});
+
+test("extractEpisodeCases ignores proactive and delegation records", async () => {
+  const llm = new JsonClientStub([]);
+  const base: Omit<TurnRecord, "kind"> = {
+    botId: "ao",
+    threadId: "thread-1",
+    messages: [
+      {
+        role: "user",
+        content: "internal instruction",
+        timestampIso: "2026-07-18T00:00:00.000Z",
+      },
+    ],
+    createdAtIso: "2026-07-18T00:00:00.000Z",
+  };
+
+  assert.deepEqual(await extractEpisodeCases(llm, { ...base, kind: "proactive" }), []);
+  assert.deepEqual(await extractEpisodeCases(llm, { ...base, kind: "delegation" }), []);
+  assert.equal(llm.calls.length, 0);
 });
 
 test("buildPolicyQueryContext includes current input and recent turns", () => {

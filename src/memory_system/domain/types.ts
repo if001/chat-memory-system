@@ -16,6 +16,14 @@ export interface TurnRecord {
   createdAtIso: string;
 }
 
+export interface TurnRecordReader {
+  listRecentTurnRecords(input: {
+    botId: string;
+    threadId: string;
+    limit: number;
+  }): Promise<TurnRecord[]>;
+}
+
 export interface ConversationChunk {
   id: string;
   botId: string;
