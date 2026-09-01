@@ -3,16 +3,9 @@ import {
   ConversationChunk,
   EpisodeCase,
   PolicyCard,
-  PolicySplitCandidate,
   TurnRecord,
 } from "../domain/types";
 import { buildPolicyHypothesisFromEpisodes } from "../application/usecases/buildPolicyCard";
-import {
-  applyEpisodeToPolicyCardFlow,
-  createPolicyCardFlowCache,
-  PolicyCardFlowPorts,
-  PolicyFlowRecoverableError,
-} from "../application/usecases/policyCardFlow";
 import {
   buildConversationChunks,
   normalizeChunkingConfig,
@@ -20,7 +13,7 @@ import {
 import { buildPolicyQueryContext } from "../application/usecases/buildPolicyQueryContext";
 import { extractEpisodeCasesFromChunk } from "../application/usecases/extractEpisodeCase";
 import { filterApplicablePolicyCards } from "../application/usecases/filterApplicablePolicyCards";
-import { episodesForLlm } from "../application/usecases/llmPayloads";
+import { updatePolicyCardFromEpisode } from "../application/usecases/updatePolicyCard";
 import { OllamaEmbeddingClient } from "../infrastructure/ollama/embeddingClient";
 import { OllamaClient } from "../infrastructure/ollama/client";
 import {
@@ -44,9 +37,7 @@ export interface MemorySystemOptions {
   chunkOverlapTurns?: number;
   policyQueryHistoryTurns?: number;
   policyQueryHistoryMaxTokens?: number;
-  policySearchLimit?: number;
   agentInitiatedResponseMaxHours?: number;
-  policyFlowPorts?: Partial<PolicyCardFlowPorts>;
 }
 
 export interface QueryPolicyInput {
@@ -80,7 +71,6 @@ export interface MemorySystemService {
     limit?: number,
   ): Promise<PolicyCard[]>;
   queryApplicablePolicyCards(input: QueryPolicyInput): Promise<PolicyCard[]>;
-  generateMemoryReport(botId: string, threadId: string): Promise<MemoryReport>;
 }
 
 class DefaultMemorySystemService implements MemorySystemService {
@@ -90,8 +80,6 @@ class DefaultMemorySystemService implements MemorySystemService {
   private readonly chunkingConfig: ChunkingConfig;
   private readonly policyQueryHistoryTurns: number;
   private readonly policyQueryHistoryMaxTokens: number;
-  private readonly policySearchLimit: number;
-  private readonly policyFlowPorts: PolicyCardFlowPorts;
 
   constructor(private readonly options: MemorySystemOptions) {
     this.llm = createFileCachedJsonClient(
@@ -125,12 +113,6 @@ class DefaultMemorySystemService implements MemorySystemService {
     this.policyQueryHistoryTurns = options.policyQueryHistoryTurns ?? 4;
     this.policyQueryHistoryMaxTokens =
       options.policyQueryHistoryMaxTokens ?? 1000;
-    this.policySearchLimit = options.policySearchLimit ?? 5;
-    this.policyFlowPorts = buildDefaultPolicyFlowPorts(
-      this.llm,
-      this.embedText,
-      options,
-    );
   }
 
   async ingestTurnRecord(input: TurnRecord): Promise<void> {
@@ -224,13 +206,11 @@ class DefaultMemorySystemService implements MemorySystemService {
     }
 
     const updatedCards: PolicyCard[] = [];
-    const cache = createPolicyCardFlowCache();
-    const deferredEpisodeIds = new Set<string>();
     console.log("[buildOrUpdatePolicyCards]: episodes.len=", episodes.length);
     for (const episode of episodes) {
       const existingCards = await this.repository.fetchPolicyCards(botId, 100);
       const episodeIds = existingCards.flatMap(
-        (card) => card.relatedEpisodeIds,
+        (card) => card.episodeIds,
       );
       const relatedEpisodes = await this.repository.fetchEpisodesByIds(botId, [
         ...new Set(episodeIds),
@@ -238,70 +218,27 @@ class DefaultMemorySystemService implements MemorySystemService {
       const episodesByCardId = new Map<string, EpisodeCase[]>();
       for (const card of existingCards) {
         const related = relatedEpisodes.filter((candidate) =>
-          card.relatedEpisodeIds.includes(candidate.id),
+          card.episodeIds.includes(candidate.id),
         );
         episodesByCardId.set(card.id, related);
       }
-      const unassignedEpisodes = (
-        await this.repository.fetchUnassignedEpisodes(botId, 200)
-      ).filter(
-        (candidate) =>
-          candidate.id !== episode.id && !deferredEpisodeIds.has(candidate.id),
-      );
-
-      const result = await applyEpisodeToPolicyCardFlow({
+      const card = await updatePolicyCardFromEpisode({
+        llm: this.llm,
         botId,
-        newEpisode: episode,
+        episode,
         existingCards,
         episodesByCardId,
-        unassignedEpisodes,
-        searchLimit: this.policySearchLimit,
-        ports: this.policyFlowPorts,
-        cache,
+        buildHypothesis: (evidence) =>
+          buildPolicyHypothesisFromEpisodes(this.llm, evidence),
       });
-      console.log(
-        "[buildOrUpdatePolicyCards]: applyEpisodeToPolicyCardFlow done",
+      await this.repository.upsertPolicyCard(card);
+      updatedCards.push(card);
+      await this.repository.updateEpisodeRelatedCard(
+        botId,
+        card.episodeIds,
+        card.id,
       );
-      console.log("[buildOrUpdatePolicyCards] result", result);
-      for (const card of result.updatedCards) {
-        await this.repository.upsertPolicyCard(card);
-        updatedCards.push(card);
-      }
-
-      if (result.outcome === "merged" || result.outcome === "created") {
-        await this.repository.updateEpisodeRelatedCard(
-          botId,
-          result.assignedEpisodeIds,
-          result.updatedCards[0]?.id,
-        );
-      }
-
-      if (result.outcome === "split") {
-        const [updatedOriginalCard, createdCard] = result.updatedCards;
-        const newCardEpisodeIds = createdCard.relatedEpisodeIds;
-        const originalEpisodeIds = updatedOriginalCard.relatedEpisodeIds;
-        await Promise.all([
-          this.repository.updateEpisodeRelatedCard(
-            botId,
-            newCardEpisodeIds,
-            createdCard.id,
-          ),
-          this.repository.updateEpisodeRelatedCard(
-            botId,
-            originalEpisodeIds,
-            updatedOriginalCard.id,
-          ),
-        ]);
-      }
-
-      if (result.outcome === "unassigned" && result.recoverableError) {
-        deferredEpisodeIds.add(episode.id);
-      }
-
       await this.repository.markEpisodeProcessed(episode.id);
-      console.log("[buildOrUpdatePolicyCards]: done...");
-      // return; // debug用return
-      await sleep(60 * 1000); //60s
     }
     console.log("[buildOrUpdatePolicyCards]: done");
     return updatedCards;
@@ -320,136 +257,10 @@ class DefaultMemorySystemService implements MemorySystemService {
       recentTurns,
       this.policyQueryHistoryMaxTokens,
     );
-    const candidates = await this.repository.fetchPolicyCards(
-      input.botId,
-      input.limit ?? 10,
-    );
+    const candidates = (
+      await this.repository.fetchPolicyCards(input.botId, input.limit ?? 10)
+    ).filter((card) => card.episodeIds.length > 0);
     return filterApplicablePolicyCards(this.llm, queryContext, candidates);
-  }
-
-  async listOpenSplitCandidates(
-    botId: string,
-    limit: number = 20,
-  ): Promise<PolicySplitCandidate[]> {
-    return this.repository.fetchOpenSplitCandidates(botId, limit);
-  }
-
-  async resolveSplitCandidate(
-    botId: string,
-    candidateId: string,
-  ): Promise<PolicySplitCandidate | null> {
-    return this.transitionSplitCandidate(botId, candidateId, "resolved");
-  }
-
-  async ignoreSplitCandidate(
-    botId: string,
-    candidateId: string,
-  ): Promise<PolicySplitCandidate | null> {
-    return this.transitionSplitCandidate(botId, candidateId, "ignored");
-  }
-
-  async generateMemoryReport(
-    botId: string,
-    threadId: string,
-  ): Promise<MemoryReport> {
-    const cards = await this.repository.fetchPolicyCards(botId, 20);
-    const signals = buildMemoryReportSignals(cards, new Date());
-    return this.repository.createMemoryReport(
-      botId,
-      threadId,
-      signals.gaps,
-      signals.staleNotes,
-      signals.conflicts,
-    );
-  }
-
-  private async applyPolicyDecision(
-    botId: string,
-    episode: EpisodeCase,
-    decision: Awaited<ReturnType<typeof decidePolicyCardUpdate>>,
-    existingCards: PolicyCard[],
-  ): Promise<PolicyCard | null> {
-    if (decision.decision === "merge" && decision.targetPolicyCardId) {
-      const existing = existingCards.find(
-        (card) => card.id === decision.targetPolicyCardId,
-      );
-      if (existing && decision.updatedPolicyCard) {
-        const updatedCard = mergePolicyCardUpdate(
-          existing,
-          decision.updatedPolicyCard,
-          episode,
-        );
-        await this.repository.upsertPolicyCard(updatedCard);
-        return updatedCard;
-      }
-    }
-
-    if (decision.decision === "split_existing") {
-      await this.repository.savePolicySplitCandidate({
-        id: buildSplitCandidateId(episode.id, decision.targetPolicyCardId),
-        botId,
-        episodeId: episode.id,
-        targetPolicyCardId: decision.targetPolicyCardId,
-        reason: decision.reason,
-        status: "open",
-        createdAtIso: new Date().toISOString(),
-      });
-    }
-
-    const createdCard = await buildPolicyCardFromEpisodes(this.llm, botId, [
-      episode,
-    ]);
-    if (!createdCard) {
-      return null;
-    }
-    await this.repository.upsertPolicyCard(createdCard);
-    return createdCard;
-  }
-
-  private async transitionSplitCandidate(
-    botId: string,
-    candidateId: string,
-    nextStatus: "resolved" | "ignored",
-  ): Promise<PolicySplitCandidate | null> {
-    const existing = await this.repository.fetchPolicySplitCandidateById(
-      botId,
-      candidateId,
-    );
-    if (!existing) {
-      return null;
-    }
-    const updated = transitionPolicySplitCandidate(existing, nextStatus);
-    await this.repository.updatePolicySplitCandidateStatus(
-      botId,
-      candidateId,
-      updated.status,
-    );
-    if (nextStatus === "resolved") {
-      await this.applyResolvedSplitCandidate(botId, updated);
-    }
-    return updated;
-  }
-
-  private async applyResolvedSplitCandidate(
-    botId: string,
-    candidate: PolicySplitCandidate,
-  ): Promise<void> {
-    if (!candidate.targetPolicyCardId) {
-      return;
-    }
-    const [episode, targetCard] = await Promise.all([
-      this.repository.fetchEpisodeById(botId, candidate.episodeId),
-      this.repository.fetchPolicyCardById(botId, candidate.targetPolicyCardId),
-    ]);
-    if (!episode || !targetCard) {
-      return;
-    }
-    const updatedCard = applyResolvedSplitCandidate(
-      targetCard,
-      episode,
-      candidate,
-    );
-    await this.repository.upsertPolicyCard(updatedCard);
   }
 }
 
@@ -457,124 +268,4 @@ export const createMemorySystemService = (
   options: MemorySystemOptions,
 ): MemorySystemService => {
   return new DefaultMemorySystemService(options);
-};
-
-const normalizeCandidateList = (values: string[] | undefined): string[] =>
-  (values ?? [])
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .slice(0, 5);
-
-const buildDefaultPolicyFlowPorts = (
-  llm: JsonGeneratingClient,
-  embedText: ((text: string) => Promise<number[]>) | undefined,
-  options: MemorySystemOptions,
-): PolicyCardFlowPorts => {
-  const defaultPorts: PolicyCardFlowPorts = {
-    buildHypothesis: async (episodes) =>
-      wrapRecoverable("buildHypothesis", () =>
-        buildPolicyHypothesisFromEpisodes(llm, episodes, embedText),
-      ),
-    searchCards: async (hypothesis, cards, limit) =>
-      rankCardsBySimilarity(hypothesis, cards).slice(0, limit),
-    evaluateEpisodes: async (episodes) => {
-      console.log("[evaluateEpisodes]: call llm episode", episodes.length);
-      return wrapRecoverable("evaluateEpisodes", () =>
-        llm.generateJson<PolicyEvaluation>(
-          [
-            "あなたは policy evaluation judge です。",
-            "Episode 群が 1 つの Policy として一貫しているかを判定してください。",
-            "Episodeはユーザーとagentの具体的な行動結果で、PolicyとはEpisode群を抽象的にまとめたものです。",
-            "consistent: このEpisode群は、提示されたstateの具体例であり、提示されたactionの具体的実行であり、outcomeも同じ種類の変化として説明できるか。",
-            "clear: このPolicyは、状態を観測したAgentが、取るべき手順を迷わず選べる記述になっているか。",
-            "JSON のみを返してください。",
-          ].join(" "),
-          JSON.stringify({
-            instruction:
-              "consistent と clear を boolean で返してください。Episode 群が同じ state/action/outcome の具体例なら consistent=true、state から action を迷わず選べるなら clear=true です。",
-            episodes: episodesForLlm(episodes),
-          }),
-        ),
-      );
-    },
-    evaluateSplit: async (groupA, groupB) => {
-      console.log("[evaluateSplit]: call llm");
-      return wrapRecoverable("evaluateSplit", () =>
-        llm.generateJson<PolicyEvaluation>(
-          [
-            "あなたは policy split evaluation judge です。",
-            "2 つの Episode 群を別 Policy に分けるべきかを判定してください。",
-            "Episodeはユーザーとagentの具体的な行動結果で、PolicyとはEpisode群を抽象的にまとめたものです。",
-            "consistent: このEpisode群は、提示されたstateの具体例であり、提示されたactionの具体的実行であり、outcomeも同じ種類の変化として説明できるか。",
-            "clear: このPolicyは、状態を観測したAgentが、取るべき手順を迷わず選べる記述になっているか。",
-            "JSON のみを返してください。",
-          ].join(" "),
-          JSON.stringify({
-            instruction:
-              "consistent と clear を boolean で返してください。両グループが個別に一貫していて、相互の違いが state/action/outcome で説明できるなら consistent=true、両 Policy が重複せず明確なら clear=true です。",
-            groupA: episodesForLlm(groupA),
-            groupB: episodesForLlm(groupB),
-          }),
-        ),
-      );
-    },
-    clusterByState: async (episodes, newEpisode) =>
-      buildSimilarityClusters(episodes, newEpisode, "state"),
-    clusterByAction: async (episodes, newEpisode) =>
-      buildSimilarityClusters(episodes, newEpisode, "action"),
-    logger: {
-      debug(step, payload) {
-        console.log(`[policy-flow:${step}]`, payload ?? "");
-      },
-    },
-  };
-
-  return {
-    ...defaultPorts,
-    ...options.policyFlowPorts,
-  };
-};
-
-const wrapRecoverable = async <T>(
-  label: string,
-  run: () => Promise<T>,
-): Promise<T> => {
-  try {
-    return await run();
-  } catch (error) {
-    throw new PolicyFlowRecoverableError(
-      `llm call failed during ${label}`,
-      error,
-    );
-  }
-};
-
-const rankCardsBySimilarity = (
-  hypothesis: PolicyHypothesis,
-  cards: PolicyCard[],
-): PolicyCard[] =>
-  [...cards].sort(
-    (left, right) =>
-      scoreCardSimilarity(hypothesis, right) -
-      scoreCardSimilarity(hypothesis, left),
-  );
-
-const scoreCardSimilarity = (
-  hypothesis: PolicyHypothesis,
-  card: PolicyCard,
-): number =>
-  tokenOverlap(hypothesis.state, card.state) * 3 +
-  tokenOverlap(hypothesis.action, card.action) * 2 +
-  tokenOverlap(hypothesis.outcome, card.outcome);
-
-const tokenOverlap = (left: string, right: string): number => {
-  const leftTokens = new Set(tokenize(left));
-  const rightTokens = new Set(tokenize(right));
-  let overlap = 0;
-  for (const token of leftTokens) {
-    if (rightTokens.has(token)) {
-      overlap += 1;
-    }
-  }
-  return overlap;
 };

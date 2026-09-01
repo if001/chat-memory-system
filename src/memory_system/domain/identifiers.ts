@@ -42,7 +42,7 @@ export const buildPolicyCardId = (
   botId: string,
   episodeIds: string[],
 ): string =>
-  `pc_${sanitizeIdPart(botId)}_${stableHash(episodeIds.sort().join("__"))}`;
+  `pc_${sanitizeIdPart(botId)}_${stableHash([...episodeIds].sort().join("__"))}`;
 
 export const ensureTurnRecordId = (
   record: TurnRecord,

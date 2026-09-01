@@ -64,20 +64,11 @@ export const memoryEpisodeCasesTable = appSchema.table("memory_episode_cases", {
 export const memoryPolicyCardsTable = appSchema.table("memory_policy_cards", {
   id: text("id").primaryKey(),
   botId: text("bot_id").notNull(),
-  state: text("state").notNull(),
-  action: text("action").notNull(),
-  outcome: text("outcome").notNull(),
-  stateEmbeddingVectorJson: jsonb("state_embedding_vector_json")
-    .$type<PolicyCard["stateEmbeddingVector"]>()
-    .notNull(),
-  actionEmbeddingVectorJson: jsonb("action_embedding_vector_json")
-    .$type<PolicyCard["actionEmbeddingVector"]>()
-    .notNull(),
-  outcomeEmbeddingVectorJson: jsonb("outcome_embedding_vector_json")
-    .$type<PolicyCard["outcomeEmbeddingVector"]>()
-    .notNull(),
-  relatedEpisodeIdsJson: jsonb("related_episode_ids_json")
-    .$type<PolicyCard["relatedEpisodeIds"]>()
+  appliesWhen: text("applies_when").notNull(),
+  recommendedBehavior: text("recommended_behavior").notNull(),
+  avoidBehavior: text("avoid_behavior"),
+  episodeIdsJson: jsonb("episode_ids_json")
+    .$type<PolicyCard["episodeIds"]>()
     .notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   lastUpdated: timestamp("last_updated", { withTimezone: true }).notNull(),
