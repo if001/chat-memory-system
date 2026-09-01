@@ -31,6 +31,9 @@ export const extractEpisodeCases = async (
   record: TurnRecord,
   embedText?: (text: string) => Promise<number[]>,
 ): Promise<EpisodeCase[]> => {
+  if (record.kind !== "human") {
+    return [];
+  }
   const normalizedRecord = ensureTurnRecordId(record);
   return extractEpisodeCasesFromConversationSource(
     llm,
