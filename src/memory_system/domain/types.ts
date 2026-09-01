@@ -60,30 +60,19 @@ export interface EpisodeCase {
 }
 
 export interface PolicyHypothesis {
-  state: string;
-  action: string;
-  outcome: string;
-  stateEmbeddingVector: EmbeddingVector;
-  actionEmbeddingVector: EmbeddingVector;
-  outcomeEmbeddingVector: EmbeddingVector;
-  relatedEpisodeIds: string[];
+  appliesWhen: string;
+  recommendedBehavior: string;
+  avoidBehavior?: string;
+  episodeIds: string[];
 }
 
 export interface PolicyCard {
   id: string;
   botId: string;
-  state: string;
-  action: string;
-  outcome: string;
-  stateEmbeddingVector: EmbeddingVector;
-  actionEmbeddingVector: EmbeddingVector;
-  outcomeEmbeddingVector: EmbeddingVector;
-  relatedEpisodeIds: string[];
+  appliesWhen: string;
+  recommendedBehavior: string;
+  avoidBehavior?: string;
+  episodeIds: string[];
   createdAtIso: string;
   lastUpdatedIso: string;
-}
-
-export interface PolicyEvaluation {
-  consistent: boolean;
-  clear: boolean;
 }

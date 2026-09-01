@@ -20,10 +20,12 @@ integrationTest(
   "repository persists episodes and policy cards with the new schema",
   async () => {
     const botId = `it-repo-${Date.now()}`;
+    const otherBotId = `${botId}-other`;
     const repository = new MemoryRepository(postgresUrl as string);
 
     try {
       await cleanupBot(botId);
+      await cleanupBot(otherBotId);
 
       const episode: EpisodeCase = {
         id: "ep-1",
@@ -41,21 +43,23 @@ integrationTest(
       const card: PolicyCard = {
         id: "pc-1",
         botId,
-        state:
+        appliesWhen:
           "User needs an implementation strategy for integration delivery.",
-        action:
+        recommendedBehavior:
           "Assistant compares concrete options with operational constraints.",
-        outcome: "A stable implementation policy is available for reuse.",
-        stateEmbeddingVector: [],
-        actionEmbeddingVector: [],
-        outcomeEmbeddingVector: [],
-        relatedEpisodeIds: ["ep-1"],
+        avoidBehavior: "Do not choose an option without checking constraints.",
+        episodeIds: ["ep-1"],
         createdAtIso: "2026-07-18T00:00:00.000Z",
         lastUpdatedIso: "2026-07-18T00:00:00.000Z",
       };
 
       await repository.saveEpisodeCase(episode);
       await repository.upsertPolicyCard(card);
+      await repository.upsertPolicyCard({
+        ...card,
+        id: "pc-other",
+        botId: otherBotId,
+      });
       await repository.updateEpisodeRelatedCard(botId, ["ep-1"], "pc-1");
 
       const storedEpisode = await repository.fetchEpisodeById(botId, "ep-1");
@@ -63,10 +67,22 @@ integrationTest(
 
       assert.equal(storedEpisode?.relatedCardId, "pc-1");
       assert.equal(storedEpisode?.state, episode.state);
-      assert.deepEqual(storedCard?.relatedEpisodeIds, ["ep-1"]);
-      assert.equal(storedCard?.action, card.action);
+      assert.deepEqual(storedCard?.episodeIds, ["ep-1"]);
+      assert.equal(storedCard?.recommendedBehavior, card.recommendedBehavior);
+      assert.equal(storedCard?.avoidBehavior, card.avoidBehavior);
+      assert.deepEqual(
+        (await repository.fetchPolicyCards(otherBotId, 10)).map(
+          (item) => item.id,
+        ),
+        ["pc-other"],
+      );
+      assert.deepEqual(
+        (await repository.fetchPolicyCards(botId, 10)).map((item) => item.id),
+        ["pc-1"],
+      );
     } finally {
       await cleanupBot(botId);
+      await cleanupBot(otherBotId);
       await repository.close();
     }
   },
@@ -170,7 +186,7 @@ integrationTest(
       const storedEpisodes = await repository.fetchRecentEpisodes(botId, 10);
 
       assert.equal(storedCards.length, 1);
-      assert.equal(storedCards[0]?.relatedEpisodeIds.length, 2);
+      assert.equal(storedCards[0]?.episodeIds.length, 2);
       assert.ok(
         storedEpisodes.every(
           (episode) => episode.relatedCardId === storedCards[0]?.id,
@@ -192,33 +208,21 @@ const createTestService = (connectionString: string): MemorySystemService => {
     ollamaAPIKey: "stub",
     chunkSizeTurns: 4,
     chunkOverlapTurns: 1,
-    policyFlowPorts: {
-      buildHypothesis: async (episodes) => ({
-        state: "User needs integration rollout guidance.",
-        action:
-          "Assistant compares concrete rollout options and operational tradeoffs.",
-        outcome: "A reusable rollout policy is created.",
-        stateEmbeddingVector: [],
-        actionEmbeddingVector: [],
-        outcomeEmbeddingVector: [],
-        relatedEpisodeIds: episodes.map((episode) => episode.id),
-      }),
-      searchCards: async () => [],
-      evaluateEpisodes: async () => ({ consistent: true, clear: true }),
-      evaluateSplit: async () => ({ consistent: false, clear: false }),
-      clusterByState: async (episodes) => [episodes],
-      clusterByAction: async (episodes) => [episodes],
-    },
   }) as MemorySystemService & {
     llm: {
-      generateJson<T>(): Promise<T>;
+      generateJson<T>(systemPrompt?: string, userPrompt?: string): Promise<T>;
     };
     repository: MemoryRepository;
   };
 
   service.llm = {
-    async generateJson<T>(): Promise<T> {
-      return {
+    async generateJson<T>(_systemPrompt?: string, userPrompt?: string): Promise<T> {
+      const payload = JSON.parse(userPrompt ?? "{}") as {
+        chunkText?: string;
+        policyCards?: Array<{ id: string }>;
+      };
+      if (payload.chunkText) {
+        return {
         episodes: [
           {
             state: "User compares webhook and polling.",
@@ -231,6 +235,18 @@ const createTestService = (connectionString: string): MemorySystemService => {
             outcome: "Operational constraints become clear.",
           },
         ],
+        } as T;
+      }
+      if (payload.policyCards && payload.policyCards.length > 0) {
+        return {
+          decision: "merge",
+          targetPolicyCardId: payload.policyCards[0]?.id,
+        } as T;
+      }
+      return {
+        appliesWhen: "User needs integration rollout guidance.",
+        recommendedBehavior:
+          "Compare concrete rollout options and operational tradeoffs.",
       } as T;
     },
   };

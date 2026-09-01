@@ -12,8 +12,12 @@ export interface EpisodeLlmPayload {
   outcome: string;
 }
 
-export interface PolicyCardLlmPayload extends EpisodeLlmPayload {
+export interface PolicyCardLlmPayload {
   id: string;
+  appliesWhen: string;
+  recommendedBehavior: string;
+  avoidBehavior?: string;
+  episodeIds: string[];
 }
 
 export const episodeForLlm = (episode: EpisodeCase): EpisodeLlmPayload => ({
@@ -28,9 +32,10 @@ export const episodesForLlm = (
 
 export const policyCardForLlm = (card: PolicyCard): PolicyCardLlmPayload => ({
   id: card.id,
-  state: card.state,
-  action: card.action,
-  outcome: card.outcome,
+  appliesWhen: card.appliesWhen,
+  recommendedBehavior: card.recommendedBehavior,
+  ...(card.avoidBehavior ? { avoidBehavior: card.avoidBehavior } : {}),
+  episodeIds: card.episodeIds,
 });
 
 export const policyCardsForLlm = (

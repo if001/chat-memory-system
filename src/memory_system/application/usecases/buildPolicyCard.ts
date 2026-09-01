@@ -3,15 +3,14 @@ import { JsonGeneratingClient } from "../../infrastructure/ollama/fileCachedClie
 import { episodesForLlm } from "./llmPayloads";
 
 interface BuildPolicyHypothesisResult {
-  state: string;
-  action: string;
-  outcome: string;
+  appliesWhen: string;
+  recommendedBehavior: string;
+  avoidBehavior?: string;
 }
 
 export const buildPolicyHypothesisFromEpisodes = async (
   llm: JsonGeneratingClient,
   episodes: EpisodeCase[],
-  embedText?: (text: string) => Promise<number[]>,
 ): Promise<PolicyHypothesis> => {
   if (episodes.length === 0) {
     throw new Error("buildPolicyHypothesisFromEpisodes requires episodes");
@@ -26,56 +25,47 @@ export const buildPolicyHypothesisFromEpisodes = async (
       "action: Agentが実際に行った応答戦略や情報取得戦略",
       "outcome: actionの後に生じた、ユーザー理解や会話状態の変化",
       "Policyは、具体的な回答内容の要約ではありません。",
-      "Policyは次の形式の抽象的な行動方針です。",
-      "## state",
-      "stateには、actionを選択するために必要な条件だけを含めてください。",
+      "Policyは適用条件、推奨行動、必要なら回避行動だけを持つ抽象的な行動方針です。",
+      "## appliesWhen",
+      "recommendedBehaviorを選ぶために必要な条件だけを含めてください。",
       "固有名詞や特定の製品名、書籍名、技術名は、それ自体が行動選択に不可欠でない限り一般化してください。",
       "単なる話題の共通点ではなく、actionが有効になる理由となる共通条件を抽出してください。",
-      "## action",
+      "## recommendedBehavior",
       "Agentが将来再利用できる具体的な応答戦略を記述してください。特定Episodeで回答した内容ではなく、回答を生成する手順や方針です。",
-      "## outcome",
-      "actionによって目指すユーザーまたは会話の変化を記述してください。",
+      "## avoidBehavior",
+      "Episodeに失敗や否定的反応がある場合だけ、避けるべき応答を記述してください。",
       "",
       "JSON のみを返してください。",
     ].join(" "),
     JSON.stringify({
       instruction:
-        "state, action, outcome を返してください。Episode の共通構造を抽象化し、手順として使える粒度にしてください。",
+        "appliesWhen, recommendedBehavior, avoidBehavior を返してください。Episode の共通構造を抽象化し、手順として使える粒度にしてください。",
       episodes: episodesForLlm(episodes),
     }),
   );
 
-  const state = requireText(parsed.state, "state");
-  const action = requireText(parsed.action, "action");
-  const outcome = requireText(parsed.outcome, "outcome");
+  const appliesWhen = requireText(parsed.appliesWhen, "appliesWhen");
+  const recommendedBehavior = requireText(
+    parsed.recommendedBehavior,
+    "recommendedBehavior",
+  );
+  const avoidBehavior = parsed.avoidBehavior?.trim();
 
   console.log(
     "[buildPolicyHypothesisFromEpisodes]: base episode",
     episodesForLlm(episodes),
   );
   console.log("[buildPolicyHypothesisFromEpisodes]: hypothesis", {
-    state,
-    action,
-    outcome,
+    appliesWhen,
+    recommendedBehavior,
+    avoidBehavior,
   });
 
-  const [stateEmbeddingVector, actionEmbeddingVector, outcomeEmbeddingVector] =
-    embedText
-      ? await Promise.all([
-          embedText(state),
-          embedText(action),
-          embedText(outcome),
-        ])
-      : [[], [], []];
-
   return {
-    state,
-    action,
-    outcome,
-    stateEmbeddingVector,
-    actionEmbeddingVector,
-    outcomeEmbeddingVector,
-    relatedEpisodeIds: episodes.map((episode) => episode.id),
+    appliesWhen,
+    recommendedBehavior,
+    ...(avoidBehavior ? { avoidBehavior } : {}),
+    episodeIds: episodes.map((episode) => episode.id),
   };
 };
 

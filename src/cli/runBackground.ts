@@ -18,26 +18,6 @@ const defaultDependencies: RunBackgroundDependencies = {
   createMemoryBackgroundRunner,
 };
 
-const required = (name: string): string => {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`Missing environment variable: ${name}`);
-  }
-  return value;
-};
-
-const optionalNumber = (name: string, fallback: number): number => {
-  const raw = process.env[name];
-  if (!raw) {
-    return fallback;
-  }
-  const value = Number(raw);
-  if (!Number.isFinite(value)) {
-    throw new Error(`Invalid numeric environment variable: ${name}`);
-  }
-  return value;
-};
-
 export const buildMemoryBackgroundRunnerFromEnv = (
   env: NodeJS.ProcessEnv,
   dependencies: RunBackgroundDependencies = defaultDependencies,
