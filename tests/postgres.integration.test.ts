@@ -17,6 +17,45 @@ const postgresUrl = process.env.MEMORY_SYSTEM_TEST_POSTGRES_URL;
 
 const integrationTest = postgresUrl ? test : test.skip;
 integrationTest(
+  "UserMemory repository shares user scope, deduplicates, replaces, and deletes notes",
+  async () => {
+    const userId = `it-user-memory-${Date.now()}`;
+    const repository = new MemoryRepository(postgresUrl as string);
+    try {
+      await cleanupUser(userId);
+      const created = await repository.rememberUserNote(
+        userId,
+        "Prefer concise answers",
+      );
+      const duplicate = await repository.rememberUserNote(
+        userId,
+        " prefer concise answers! ",
+      );
+      assert.equal(duplicate.id, created.id);
+      assert.equal((await repository.searchUserNotes(userId, "", 10)).length, 1);
+
+      const replaced = await repository.replaceUserNote(
+        userId,
+        created.id,
+        "Prefer detailed answers",
+      );
+      assert.equal(replaced?.note, "Prefer detailed answers");
+      assert.deepEqual(
+        (await repository.searchUserNotes(userId, "concise", 10)).map(
+          (item) => item.note,
+        ),
+        [],
+      );
+      assert.equal(await repository.deleteUserNote(userId, created.id), true);
+      assert.deepEqual(await repository.searchUserNotes(userId, "", 10), []);
+    } finally {
+      await cleanupUser(userId);
+      await repository.close();
+    }
+  },
+);
+
+integrationTest(
   "repository persists episodes and policy cards with the new schema",
   async () => {
     const botId = `it-repo-${Date.now()}`;
@@ -289,6 +328,15 @@ const cleanupBot = async (botId: string): Promise<void> => {
     await pool.query("DELETE FROM app.memory_turn_records WHERE bot_id = $1", [
       botId,
     ]);
+  } finally {
+    await pool.end();
+  }
+};
+
+const cleanupUser = async (userId: string): Promise<void> => {
+  const pool = new Pool({ connectionString: postgresUrl });
+  try {
+    await pool.query("DELETE FROM user_notes WHERE user_id = $1", [userId]);
   } finally {
     await pool.end();
   }

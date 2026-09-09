@@ -10,6 +10,7 @@ import {
   PolicyCard,
   TurnRecord,
 } from "../src/memory_system/domain/types";
+import { UserNote } from "../src/memory_system/domain/userMemory";
 
 type RepositoryStub = {
   saveTurnRecord(input: TurnRecord): Promise<void>;
@@ -26,6 +27,18 @@ type RepositoryStub = {
   markEpisodeProcessed(episodeId: string): Promise<void>;
   fetchPolicyCards(botId: string, limit: number): Promise<PolicyCard[]>;
   upsertPolicyCard(card: PolicyCard): Promise<void>;
+  rememberUserNote(userId: string, note: string): Promise<UserNote>;
+  searchUserNotes(
+    userId: string,
+    query: string,
+    limit: number,
+  ): Promise<UserNote[]>;
+  replaceUserNote(
+    userId: string,
+    noteId: number,
+    note: string,
+  ): Promise<UserNote | null>;
+  deleteUserNote(userId: string, noteId: number): Promise<boolean>;
 };
 
 type StubbedService = MemorySystemService & {
@@ -165,6 +178,84 @@ test("queryApplicablePolicyCards filters model-selected cards and ignores cards 
   assert.deepEqual(result, [evidenced]);
 });
 
+test("rememberUserNote keeps a semantic duplicate without inserting it", async () => {
+  const existing: UserNote = {
+    id: 1,
+    note: "Prefer concise answers",
+    createdAt: new Date("2026-09-09T00:00:00.000Z"),
+  };
+  let inserts = 0;
+  const service = createStubbedService(
+    {
+      searchUserNotes: async () => [existing],
+      rememberUserNote: async () => {
+        inserts += 1;
+        return existing;
+      },
+    },
+    [
+      {
+        destination: "user_memory",
+        action: "keep_existing",
+        targetNoteId: 1,
+        reason: "semantic duplicate",
+      },
+    ],
+  );
+
+  const result = await service.rememberUserNote({
+    userId: "shared-user",
+    note: "Concise replies, please",
+  });
+
+  assert.equal(result.action, "keep_existing");
+  assert.equal(result.note?.id, 1);
+  assert.equal(inserts, 0);
+});
+
+test("replaceUserNote removes the old correction target from subsequent searches", async () => {
+  const notes: UserNote[] = [
+    {
+      id: 1,
+      note: "Prefer concise answers",
+      createdAt: new Date("2026-09-09T00:00:00.000Z"),
+    },
+  ];
+  const service = createStubbedService(
+    {
+      searchUserNotes: async () => notes,
+      replaceUserNote: async (_userId, noteId, note) => {
+        const target = notes.find((item) => item.id === noteId);
+        if (!target) return null;
+        target.note = note;
+        return target;
+      },
+    },
+    [
+      {
+        destination: "user_memory",
+        action: "replace",
+        targetNoteId: 1,
+        reason: "explicit correction",
+      },
+    ],
+  );
+
+  const result = await service.replaceUserNote({
+    userId: "shared-user",
+    noteId: 1,
+    note: "Prefer detailed answers",
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    (await service.searchUserNotes({ userId: "shared-user", query: "" })).map(
+      (item) => item.note,
+    ),
+    ["Prefer detailed answers"],
+  );
+});
+
 const createStubbedService = (
   repositoryOverrides: Partial<RepositoryStub>,
   responses: unknown[] = [],
@@ -198,6 +289,14 @@ const createStubbedService = (
     markEpisodeProcessed: async () => {},
     fetchPolicyCards: async () => [],
     upsertPolicyCard: async () => {},
+    rememberUserNote: async (_userId, note) => ({
+      id: 1,
+      note,
+      createdAt: new Date("2026-09-09T00:00:00.000Z"),
+    }),
+    searchUserNotes: async () => [],
+    replaceUserNote: async () => null,
+    deleteUserNote: async () => false,
     ...repositoryOverrides,
   };
   return service;

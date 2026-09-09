@@ -1,4 +1,14 @@
-import { integer, jsonb, pgSchema, text, timestamp } from "drizzle-orm/pg-core";
+import {
+  bigserial,
+  integer,
+  jsonb,
+  pgSchema,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import {
   ConversationChunk,
   EpisodeCase,
@@ -7,6 +17,24 @@ import {
 } from "../../domain/types";
 
 const appSchema = pgSchema("app");
+
+export const userNotesTable = pgTable(
+  "user_notes",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    userId: text("user_id").notNull(),
+    note: text("note").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("user_notes_user_normalized_unique").on(
+      table.userId,
+      sql`regexp_replace(lower(trim(${table.note})), '[[:space:]。、,.!！?？]+', ' ', 'g')`,
+    ),
+  ],
+);
 
 export const memoryTurnRecordsTable = appSchema.table("memory_turn_records", {
   id: text("id").primaryKey(),

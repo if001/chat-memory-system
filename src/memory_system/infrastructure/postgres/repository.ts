@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, isNull, sql } from "drizzle-orm";
 import { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import {
@@ -8,12 +8,14 @@ import {
   TurnRecord,
 } from "../../domain/types";
 import { ensureTurnRecordId } from "../../domain/identifiers";
+import { UserNote } from "../../domain/userMemory";
 import { createDrizzleClient } from "./drizzleClient";
 import {
   memoryConversationChunksTable,
   memoryEpisodeCasesTable,
   memoryPolicyCardsTable,
   memoryTurnRecordsTable,
+  userNotesTable,
 } from "./schema";
 
 export class MemoryRepository {
@@ -43,6 +45,81 @@ export class MemoryRepository {
         createdAt: new Date(record.createdAtIso),
       })
       .onConflictDoNothing();
+  }
+
+  async rememberUserNote(userId: string, note: string): Promise<UserNote> {
+    const normalized = normalizeNote(note);
+    const existing = (await this.searchUserNotes(userId, "", 100)).find(
+      (item) => normalizeNote(item.note) === normalized,
+    );
+    if (existing) return existing;
+    const rows = await this.db
+      .insert(userNotesTable)
+      .values({ userId, note: note.trim() })
+      .onConflictDoNothing()
+      .returning();
+    if (rows[0]) return mapUserNote(rows[0]);
+    const concurrent = (await this.searchUserNotes(userId, "", 100)).find(
+      (item) => normalizeNote(item.note) === normalized,
+    );
+    if (!concurrent) {
+      throw new Error("UserMemory note insert did not return a row");
+    }
+    return concurrent;
+  }
+
+  async searchUserNotes(
+    userId: string,
+    query: string,
+    limit: number,
+  ): Promise<UserNote[]> {
+    const normalizedQuery = query.trim();
+    let statement = this.db.select().from(userNotesTable).$dynamic();
+    statement = statement.where(
+      normalizedQuery
+        ? and(
+            eq(userNotesTable.userId, userId),
+            ilike(userNotesTable.note, `%${escapeLike(normalizedQuery)}%`),
+          )
+        : eq(userNotesTable.userId, userId),
+    );
+    const rows = await statement
+      .orderBy(desc(userNotesTable.createdAt))
+      .limit(limit);
+    return rows.map(mapUserNote);
+  }
+
+  async replaceUserNote(
+    userId: string,
+    noteId: number,
+    note: string,
+  ): Promise<UserNote | null> {
+    const equivalent = (await this.searchUserNotes(userId, "", 100)).find(
+      (item) =>
+        item.id !== noteId && normalizeNote(item.note) === normalizeNote(note),
+    );
+    if (equivalent) {
+      await this.deleteUserNote(userId, noteId);
+      return equivalent;
+    }
+    const rows = await this.db
+      .update(userNotesTable)
+      .set({ note: note.trim() })
+      .where(
+        and(eq(userNotesTable.userId, userId), eq(userNotesTable.id, noteId)),
+      )
+      .returning();
+    return rows[0] ? mapUserNote(rows[0]) : null;
+  }
+
+  async deleteUserNote(userId: string, noteId: number): Promise<boolean> {
+    const rows = await this.db
+      .delete(userNotesTable)
+      .where(
+        and(eq(userNotesTable.userId, userId), eq(userNotesTable.id, noteId)),
+      )
+      .returning({ id: userNotesTable.id });
+    return rows.length > 0;
   }
 
   async fetchTurnRecordsForThread(
@@ -394,4 +471,17 @@ const mapPolicyCardRow = (
   episodeIds: row.episodeIdsJson ?? [],
   createdAtIso: new Date(row.createdAt).toISOString(),
   lastUpdatedIso: new Date(row.lastUpdated).toISOString(),
+});
+
+const normalizeNote = (value: string): string =>
+  value.trim().toLocaleLowerCase().replace(/[\s。、,.!！?？]+/gu, " ").trim();
+
+const escapeLike = (value: string): string => value.replace(/[%_\\]/g, "\\$&");
+
+const mapUserNote = (
+  row: typeof userNotesTable.$inferSelect,
+): UserNote => ({
+  id: row.id,
+  note: row.note,
+  createdAt: new Date(row.createdAt),
 });
