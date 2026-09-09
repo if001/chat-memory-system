@@ -72,8 +72,10 @@ export const createMemoryBackgroundRunner = (
       return;
     }
     inFlight = runOnce()
-      .catch(() => {
-        process.stdout.write("[memory-background-error] cycle failed\n");
+      .catch((error: unknown) => {
+        const message =
+          error instanceof Error ? (error.stack ?? error.message) : String(error);
+        process.stdout.write(`[memory-background-error] ${message}\n`);
       })
       .finally(() => {
         inFlight = null;

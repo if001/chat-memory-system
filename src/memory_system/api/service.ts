@@ -630,11 +630,12 @@ class DefaultMemorySystemService implements MemorySystemService {
         });
         await this.repository.completeTurnMemoryRecord(record.id, new Date());
         result.processed += 1;
-      } catch {
+      } catch (error: unknown) {
         result.failed += 1;
         await this.repository.releaseTurnMemoryRecord(record.id);
+        const detail = error instanceof Error ? error.message : String(error);
         process.stdout.write(
-          `[memory-candidate-error] turnRecordId=${record.id}\n`,
+          `[memory-candidate-error] turnRecordId=${record.id} detail=${detail}\n`,
         );
       }
     });
