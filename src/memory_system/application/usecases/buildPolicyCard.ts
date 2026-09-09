@@ -51,16 +51,6 @@ export const buildPolicyHypothesisFromEpisodes = async (
   );
   const avoidBehavior = parsed.avoidBehavior?.trim();
 
-  console.log(
-    "[buildPolicyHypothesisFromEpisodes]: base episode",
-    episodesForLlm(episodes),
-  );
-  console.log("[buildPolicyHypothesisFromEpisodes]: hypothesis", {
-    appliesWhen,
-    recommendedBehavior,
-    avoidBehavior,
-  });
-
   return {
     appliesWhen,
     recommendedBehavior,

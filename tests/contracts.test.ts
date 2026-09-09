@@ -27,10 +27,10 @@ test("public facade keeps caller scope while hiding storage details", async () =
     },
     inspectCatalog: async (input) => ({
       status: "available",
-      conversationHistory: { available: true, topics: [input.threadId] },
-      userMemory: { available: true, topics: [input.userId] },
-      dailyEvents: { available: false, topics: [] },
-      policyCards: { available: true, topics: [input.botId] },
+      conversationHistory: { status: "available", available: true, topics: [input.threadId] },
+      userMemory: { status: "available", available: true, topics: [input.userId] },
+      dailyEvents: { status: "empty", available: false, topics: [] },
+      policyCards: { status: "available", available: true, topics: [input.botId] },
     }),
     search: async (input): Promise<MemorySearchResult> => ({
       userMemory: {

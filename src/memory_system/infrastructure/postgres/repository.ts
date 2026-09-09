@@ -8,6 +8,7 @@ import {
   ilike,
   inArray,
   isNull,
+  lt,
   lte,
   or,
   sql,
@@ -37,6 +38,7 @@ import {
   memoryEpisodeCasesTable,
   memoryPolicyCardsTable,
   memoryTurnRecordsTable,
+  memoryTurnMemoryProcessingTable,
   memoryUserNoteSearchIndexTable,
   userNotesTable,
   dailyEventsTable,
@@ -70,6 +72,79 @@ export class MemoryRepository {
         createdAt: new Date(record.createdAtIso),
       })
       .onConflictDoNothing();
+  }
+
+  async fetchPendingTurnMemoryRecords(
+    botId: string,
+    limit: number,
+    now: Date,
+  ): Promise<TurnRecord[]> {
+    const rows = await this.db
+      .select({ record: memoryTurnRecordsTable })
+      .from(memoryTurnRecordsTable)
+      .leftJoin(
+        memoryTurnMemoryProcessingTable,
+        eq(
+          memoryTurnRecordsTable.id,
+          memoryTurnMemoryProcessingTable.turnRecordId,
+        ),
+      )
+      .where(
+        and(
+          eq(memoryTurnRecordsTable.botId, botId),
+          eq(memoryTurnRecordsTable.kind, "human"),
+          isNull(memoryTurnMemoryProcessingTable.processedAt),
+          or(
+            isNull(memoryTurnMemoryProcessingTable.turnRecordId),
+            isNull(memoryTurnMemoryProcessingTable.leaseUntil),
+            lt(memoryTurnMemoryProcessingTable.leaseUntil, now),
+          ),
+        ),
+      )
+      .orderBy(asc(memoryTurnRecordsTable.createdAt))
+      .limit(limit);
+    return rows.map(({ record }) => mapTurnRecordRow(record));
+  }
+
+  async claimTurnMemoryRecord(
+    turnRecordId: string,
+    leaseUntil: Date,
+    now: Date,
+  ): Promise<boolean> {
+    const rows = await this.db
+      .insert(memoryTurnMemoryProcessingTable)
+      .values({ turnRecordId, leaseUntil, updatedAt: now })
+      .onConflictDoUpdate({
+        target: memoryTurnMemoryProcessingTable.turnRecordId,
+        set: { leaseUntil, updatedAt: now },
+        where: and(
+          isNull(memoryTurnMemoryProcessingTable.processedAt),
+          or(
+            isNull(memoryTurnMemoryProcessingTable.leaseUntil),
+            lt(memoryTurnMemoryProcessingTable.leaseUntil, now),
+          ),
+        ),
+      })
+      .returning({ turnRecordId: memoryTurnMemoryProcessingTable.turnRecordId });
+    return rows.length === 1;
+  }
+
+  async completeTurnMemoryRecord(turnRecordId: string, now: Date): Promise<void> {
+    await this.db
+      .update(memoryTurnMemoryProcessingTable)
+      .set({ processedAt: now, leaseUntil: null, updatedAt: now })
+      .where(eq(memoryTurnMemoryProcessingTable.turnRecordId, turnRecordId));
+  }
+
+  async releaseTurnMemoryRecord(turnRecordId: string): Promise<void> {
+    await this.db
+      .delete(memoryTurnMemoryProcessingTable)
+      .where(
+        and(
+          eq(memoryTurnMemoryProcessingTable.turnRecordId, turnRecordId),
+          isNull(memoryTurnMemoryProcessingTable.processedAt),
+        ),
+      );
   }
 
   async rememberUserNote(userId: string, note: string): Promise<UserNote> {
@@ -291,6 +366,21 @@ export class MemoryRepository {
       .orderBy(asc(dailyEventsTable.eventDate), asc(dailyEventsTable.createdAt))
       .limit(input.limit ?? 20);
     return rows.map(mapDailyEventRow);
+  }
+
+  async getDailyEventDateRange(
+    userId: string,
+  ): Promise<{ from?: string; to?: string } | undefined> {
+    const rows = await this.db
+      .select({
+        from: sql<string | null>`min(${dailyEventsTable.eventDate})`,
+        to: sql<string | null>`max(${dailyEventsTable.eventDate})`,
+      })
+      .from(dailyEventsTable)
+      .where(eq(dailyEventsTable.userId, userId));
+    const row = rows[0];
+    if (!row?.from || !row.to) return undefined;
+    return { from: row.from, to: row.to };
   }
 
   async upsertTurnSearchIndex(entry: TurnSearchIndexEntry): Promise<void> {

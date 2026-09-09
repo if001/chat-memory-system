@@ -32,10 +32,12 @@ export interface MemoryCatalogRequest {
 }
 
 export interface MemoryCatalogEntry {
+  status: "available" | "empty" | "unavailable";
   available: boolean;
   topics: string[];
   updatedAt?: string;
   dateRange?: { from?: string; to?: string };
+  reason?: string;
 }
 
 export interface MemoryCatalog {

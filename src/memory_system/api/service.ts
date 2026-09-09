@@ -25,6 +25,9 @@ import {
 } from "../infrastructure/ollama/fileCachedClient";
 import { MemoryRepository } from "../infrastructure/postgres/repository";
 import type {
+  MemoryCatalog,
+  MemoryCatalogEntry,
+  MemoryCatalogRequest,
   MemorySearchRequest,
   MemorySearchResult,
 } from "./contracts";
@@ -52,6 +55,10 @@ import {
   cosineSimilarity,
 } from "../application/usecases/turnSearchIndex";
 import { join } from "node:path";
+import {
+  classifyTurnMemoryCandidates,
+  TurnMemoryCandidate,
+} from "../application/usecases/classifyTurnMemoryCandidates";
 
 export interface MemorySystemOptions {
   postgresUrl: string;
@@ -76,6 +83,20 @@ export interface QueryPolicyInput {
   threadId: string;
   currentContext: string;
   limit?: number;
+}
+
+export interface TurnMemoryProcessingResult {
+  status: "processed" | "ignored";
+  candidates: TurnMemoryCandidate[];
+  userMemory: UserMemoryWriteResult[];
+  dailyEvents: Array<{ action: "created" | "kept"; event: DailyEvent }>;
+}
+
+export interface PendingTurnMemoryBatchResult {
+  selected: number;
+  claimed: number;
+  processed: number;
+  failed: number;
 }
 
 export interface MemorySystemService {
@@ -103,6 +124,7 @@ export interface MemorySystemService {
   ): Promise<PolicyCard[]>;
   queryApplicablePolicyCards(input: QueryPolicyInput): Promise<PolicyCard[]>;
   search(input: MemorySearchRequest): Promise<MemorySearchResult>;
+  inspectCatalog(input: MemoryCatalogRequest): Promise<MemoryCatalog>;
   rememberUserNote(input: {
     userId: string;
     note: string;
@@ -129,6 +151,17 @@ export interface MemorySystemService {
     input: TurnRecordSearchRequest,
   ): Promise<TurnRecordSearchItem[]>;
   backfillTurnSearchIndex(botId: string, limit?: number): Promise<number>;
+  processTurnMemoryCandidates(input: {
+    userId: string;
+    turn: TurnRecord;
+  }): Promise<TurnMemoryProcessingResult>;
+  processPendingTurnMemories(input: {
+    botId: string;
+    userId: string;
+    limit: number;
+    concurrency: number;
+    leaseMs?: number;
+  }): Promise<PendingTurnMemoryBatchResult>;
 }
 
 class DefaultMemorySystemService implements MemorySystemService {
@@ -359,13 +392,10 @@ class DefaultMemorySystemService implements MemorySystemService {
                 })),
               }
             : { status: "not_found" };
-        } catch (error) {
+        } catch {
           result.conversationHistory = {
             status: "unavailable",
-            reason:
-              error instanceof Error
-                ? error.message
-                : "TurnRecord search failed",
+            reason: "TurnRecord search failed",
           };
         }
         continue;
@@ -427,14 +457,188 @@ class DefaultMemorySystemService implements MemorySystemService {
               data: memories.map(({ id, note }) => ({ noteId: id, note })),
             }
           : { status: "not_found" };
-      } catch (error) {
+      } catch {
         result.userMemory = {
           status: "unavailable",
-          reason:
-            error instanceof Error ? error.message : "UserMemory search failed",
+          reason: "UserMemory search failed",
         };
       }
     }
+    return result;
+  }
+
+  async inspectCatalog(input: MemoryCatalogRequest): Promise<MemoryCatalog> {
+    const [conversationHistory, userMemory, dailyEvents, policyCards] =
+      await Promise.all([
+        catalogEntry(async () => {
+          const turns = await this.repository.fetchRecentTurnRecordsForThread(
+            input.botId,
+            input.threadId,
+            CATALOG_SOURCE_LIMIT,
+          );
+          return {
+            topics: turns.flatMap((turn) =>
+              turn.messages
+                .filter((message) => message.role !== "system")
+                .map((message) => message.content),
+            ),
+            updatedAt: latestIso(turns.map((turn) => turn.createdAtIso)),
+          };
+        }),
+        catalogEntry(async () => {
+          const notes = await this.repository.searchUserNotes(
+            input.userId,
+            "",
+            CATALOG_SOURCE_LIMIT,
+          );
+          return {
+            topics: notes.map((note) => note.note),
+            updatedAt: latestIso(
+              notes.map((note) => note.createdAt.toISOString()),
+            ),
+          };
+        }),
+        catalogEntry(async () => {
+          const [events, dateRange] = await Promise.all([
+            this.repository.searchDailyEvents({
+              userId: input.userId,
+              query: "",
+              limit: CATALOG_SOURCE_LIMIT,
+            }),
+            this.repository.getDailyEventDateRange(input.userId),
+          ]);
+          return {
+            topics: events.map((event) => event.summary),
+            updatedAt: latestIso(
+              events.map((event) => event.createdAt.toISOString()),
+            ),
+            dateRange,
+          };
+        }),
+        catalogEntry(async () => {
+          const cards = await this.repository.fetchPolicyCards(
+            input.botId,
+            CATALOG_SOURCE_LIMIT,
+          );
+          return {
+            topics: cards.map((card) => card.appliesWhen),
+            updatedAt: latestIso(cards.map((card) => card.lastUpdatedIso)),
+          };
+        }),
+      ]);
+    const entries = [conversationHistory, userMemory, dailyEvents, policyCards];
+    return {
+      status: entries.every((entry) => entry.status === "unavailable")
+        ? "unavailable"
+        : "available",
+      conversationHistory,
+      userMemory,
+      dailyEvents,
+      policyCards,
+    };
+  }
+
+  async processTurnMemoryCandidates(input: {
+    userId: string;
+    turn: TurnRecord;
+  }): Promise<TurnMemoryProcessingResult> {
+    if (input.turn.kind !== "human") {
+      return {
+        status: "ignored",
+        candidates: [],
+        userMemory: [],
+        dailyEvents: [],
+      };
+    }
+    const candidates = await classifyTurnMemoryCandidates(this.llm, input.turn);
+    const userMemory: UserMemoryWriteResult[] = [];
+    const dailyEvents: Array<{
+      action: "created" | "kept";
+      event: DailyEvent;
+    }> = [];
+    for (const candidate of candidates) {
+      if (candidate.kind === "user_memory") {
+        userMemory.push(
+          await this.executeUserMemoryWrite(input.userId, candidate.note),
+        );
+        continue;
+      }
+      const existing = await this.repository.searchDailyEvents({
+        userId: input.userId,
+        query: candidate.summary,
+        from: candidate.eventDate,
+        to: candidate.eventDate,
+        limit: 20,
+      });
+      const duplicate = existing.find(
+        (event) =>
+          event.eventDate === candidate.eventDate &&
+          normalizeMemoryText(event.summary) ===
+            normalizeMemoryText(candidate.summary),
+      );
+      if (duplicate) {
+        dailyEvents.push({ action: "kept", event: duplicate });
+        continue;
+      }
+      dailyEvents.push({
+        action: "created",
+        event: await this.repository.rememberDailyEvent({
+          userId: input.userId,
+          eventDate: candidate.eventDate,
+          summary: candidate.summary,
+        }),
+      });
+    }
+    return { status: "processed", candidates, userMemory, dailyEvents };
+  }
+
+  async processPendingTurnMemories(input: {
+    botId: string;
+    userId: string;
+    limit: number;
+    concurrency: number;
+    leaseMs?: number;
+  }): Promise<PendingTurnMemoryBatchResult> {
+    const limit = Math.max(1, Math.floor(input.limit));
+    const concurrency = Math.max(1, Math.min(limit, Math.floor(input.concurrency)));
+    const leaseMs = Math.max(1_000, input.leaseMs ?? 5 * 60 * 1_000);
+    const batchStartedAt = new Date();
+    const selected = await this.repository.fetchPendingTurnMemoryRecords(
+      input.botId,
+      limit,
+      batchStartedAt,
+    );
+    const result: PendingTurnMemoryBatchResult = {
+      selected: selected.length,
+      claimed: 0,
+      processed: 0,
+      failed: 0,
+    };
+    await mapWithConcurrency(selected, concurrency, async (turn) => {
+      const record = ensureTurnRecordId(turn);
+      const claimed = await this.repository.claimTurnMemoryRecord(
+        record.id,
+        new Date(batchStartedAt.getTime() + leaseMs),
+        batchStartedAt,
+      );
+      if (!claimed) return;
+      result.claimed += 1;
+      try {
+        await this.processTurnMemoryCandidates({
+          userId: input.userId,
+          turn: record,
+        });
+        await this.repository.completeTurnMemoryRecord(record.id, new Date());
+        result.processed += 1;
+      } catch (error: unknown) {
+        result.failed += 1;
+        await this.repository.releaseTurnMemoryRecord(record.id);
+        const detail = error instanceof Error ? error.message : String(error);
+        process.stdout.write(
+          `[memory-candidate-error] turnRecordId=${record.id} detail=${detail}\n`,
+        );
+      }
+    });
     return result;
   }
 
@@ -500,12 +704,13 @@ class DefaultMemorySystemService implements MemorySystemService {
     proposedNote: string,
     explicitTargetNoteId?: number,
   ): Promise<UserMemoryWriteResult> {
-    const [partialMatches, recentNotes] = await Promise.all([
+    const [partialMatches, recentNotes, semanticMatches] = await Promise.all([
       this.repository.searchUserNotes(userId, proposedNote.trim(), 12),
       this.repository.searchUserNotes(userId, "", 24),
+      this.findSemanticUserNotes(userId, proposedNote, 12),
     ]);
     const candidates = mergeUserNoteCandidates(
-      partialMatches,
+      [...semanticMatches, ...partialMatches],
       recentNotes,
       explicitTargetNoteId,
     );
@@ -572,6 +777,28 @@ class DefaultMemorySystemService implements MemorySystemService {
       reason: decision.reason,
       deletedNoteId: target.id,
     };
+  }
+
+  private async findSemanticUserNotes(
+    userId: string,
+    query: string,
+    limit: number,
+  ): Promise<UserNote[]> {
+    if (!this.embedText) return [];
+    try {
+      const [embedding, candidates] = await Promise.all([
+        this.embedText(query),
+        this.repository.fetchUserMemorySearchCandidates(
+          userId,
+          Math.max(limit * 10, 100),
+        ),
+      ]);
+      return rankUserMemory(query, requireEmbedding(embedding), candidates)
+        .slice(0, limit)
+        .map(({ id, note, createdAt }) => ({ id, note, createdAt }));
+    } catch {
+      return [];
+    }
   }
 
   private async indexUserNote(userId: string, note: UserNote): Promise<void> {
@@ -729,6 +956,71 @@ const requireEmbedding = (embedding: number[]): number[] => {
     throw new Error("Embedding provider returned an invalid vector");
   }
   return embedding;
+};
+
+const CATALOG_SOURCE_LIMIT = 100;
+const CATALOG_TOPIC_LIMIT = 5;
+const CATALOG_TOPIC_MAX_LENGTH = 80;
+
+const catalogEntry = async (load: () => Promise<{
+  topics: string[];
+  updatedAt?: string;
+  dateRange?: { from?: string; to?: string };
+}>): Promise<MemoryCatalogEntry> => {
+  try {
+    const loaded = await load();
+    const topics = [
+      ...new Set(loaded.topics.map(formatCatalogTopic).filter(Boolean)),
+    ].slice(0, CATALOG_TOPIC_LIMIT);
+    if (topics.length === 0) {
+      return { status: "empty", available: false, topics: [] };
+    }
+    return {
+      status: "available",
+      available: true,
+      topics,
+      ...(loaded.updatedAt ? { updatedAt: loaded.updatedAt } : {}),
+      ...(loaded.dateRange ? { dateRange: loaded.dateRange } : {}),
+    };
+  } catch {
+    return {
+      status: "unavailable",
+      available: false,
+      topics: [],
+      reason: "Catalog backend failed",
+    };
+  }
+};
+
+const formatCatalogTopic = (value: string): string => {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length <= CATALOG_TOPIC_MAX_LENGTH
+    ? normalized
+    : `${normalized.slice(0, CATALOG_TOPIC_MAX_LENGTH - 1)}…`;
+};
+
+const latestIso = (values: string[]): string | undefined =>
+  values.filter(Boolean).sort().at(-1);
+
+const normalizeMemoryText = (value: string): string =>
+  value.replace(/\s+/g, " ").trim().toLocaleLowerCase();
+
+const mapWithConcurrency = async <T>(
+  items: T[],
+  concurrency: number,
+  process: (item: T) => Promise<void>,
+): Promise<void> => {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const item = items[next] as T;
+      next += 1;
+      await process(item);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, worker),
+  );
 };
 
 export const createMemorySystemService = (

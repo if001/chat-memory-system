@@ -26,8 +26,7 @@ export const filterApplicablePolicyCards = async (
     systemPrompt,
     userPrompt,
   );
-  console.log("[filterApplicablePolicyCards]:parsed", parsed);
   const selected = new Set(parsed ?? []);
-  console.log("[filterApplicablePolicyCards]: selected", selected);
+  console.log("[filterApplicablePolicyCards]: selected.len", selected.size);
   return cards.filter((card) => selected.has(card.id));
 };

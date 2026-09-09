@@ -65,12 +65,19 @@ type RepositoryStub = {
     userId: string;
     date: string;
   }): Promise<DailyEvent[]>;
+  getDailyEventDateRange(
+    userId: string,
+  ): Promise<{ from?: string; to?: string } | undefined>;
   upsertTurnSearchIndex(entry: TurnSearchIndexEntry): Promise<void>;
   fetchTurnSearchCandidates(
     input: TurnRecordSearchRequest,
     limit: number,
   ): Promise<TurnSearchIndexEntry[]>;
   fetchUnindexedTurnRecords(botId: string, limit: number): Promise<TurnRecord[]>;
+  fetchPendingTurnMemoryRecords(botId: string, limit: number, now: Date): Promise<TurnRecord[]>;
+  claimTurnMemoryRecord(turnRecordId: string, leaseUntil: Date, now: Date): Promise<boolean>;
+  completeTurnMemoryRecord(turnRecordId: string, now: Date): Promise<void>;
+  releaseTurnMemoryRecord(turnRecordId: string): Promise<void>;
 };
 
 type StubbedService = MemorySystemService & {
@@ -391,7 +398,7 @@ test("UserMemory search reports embedding failures as unavailable", async () => 
 
   assert.deepEqual(result.userMemory, {
     status: "unavailable",
-    reason: "embedding service offline",
+    reason: "UserMemory search failed",
   });
 });
 
@@ -655,6 +662,243 @@ test("backfillTurnSearchIndex is idempotent after indexing canonical turns", asy
   assert.match(indexed[0]?.excerpt ?? "", /user:/);
 });
 
+test("inspectCatalog returns bounded topic hints and daily event range", async () => {
+  const service = createStubbedService({
+    fetchRecentTurnRecordsForThread: async () => [{
+      botId: "ao", threadId: "thread-1", kind: "human",
+      messages: [{ role: "user", content: `  ${"music ".repeat(20)}  `, timestampIso: "2026-09-08T00:00:00.000Z" }],
+      createdAtIso: "2026-09-08T00:00:00.000Z",
+    }],
+    searchUserNotes: async () => Array.from({ length: 8 }, (_, index) => ({
+      id: index + 1,
+      note: `preference ${index + 1}`,
+      createdAt: new Date(`2026-09-0${Math.min(index + 1, 9)}T00:00:00.000Z`),
+    })),
+    searchDailyEvents: async () => [{
+      id: 1, userId: "user-1", eventDate: "2026-09-09",
+      summary: "visited the jazz festival", tags: [],
+      createdAt: new Date("2026-09-09T01:00:00.000Z"),
+    }],
+    getDailyEventDateRange: async () => ({ from: "2026-08-01", to: "2026-09-09" }),
+    fetchPolicyCards: async () => [card("pc-1", ["episode-1"])],
+  });
+
+  const request = { botId: "ao", threadId: "thread-1", userId: "user-1" };
+  const catalog = await service.inspectCatalog(request);
+
+  assert.equal(catalog.status, "available");
+  assert.equal(catalog.conversationHistory.topics[0]?.length, 80);
+  assert.equal(catalog.userMemory.topics.length, 5);
+  assert.deepEqual(catalog.dailyEvents.dateRange, { from: "2026-08-01", to: "2026-09-09" });
+  assert.equal(catalog.policyCards.topics[0], "User needs rollout guidance.");
+  assert.deepEqual(await service.inspectCatalog(request), catalog);
+});
+
+test("inspectCatalog isolates unavailable and empty memory areas", async () => {
+  const service = createStubbedService({
+    fetchRecentTurnRecordsForThread: async () => { throw new Error("turn store offline"); },
+    searchUserNotes: async () => [],
+    searchDailyEvents: async () => [],
+    getDailyEventDateRange: async () => undefined,
+    fetchPolicyCards: async () => { throw new Error("policy store offline"); },
+  });
+
+  const catalog = await service.inspectCatalog({ botId: "ao", threadId: "thread-1", userId: "user-1" });
+
+  assert.deepEqual(catalog.conversationHistory, {
+    status: "unavailable", available: false, topics: [], reason: "Catalog backend failed",
+  });
+  assert.deepEqual(catalog.userMemory, { status: "empty", available: false, topics: [] });
+  assert.equal(catalog.dailyEvents.status, "empty");
+  assert.equal(catalog.policyCards.status, "unavailable");
+});
+
+test("processTurnMemoryCandidates creates then keeps the same DailyEvent", async () => {
+  const stored: DailyEvent[] = [];
+  const service = createStubbedService(
+    {
+      searchDailyEvents: async () => stored,
+      rememberDailyEvent: async (input) => {
+        const event = {
+          id: 1,
+          userId: input.userId,
+          eventDate: input.eventDate,
+          summary: input.summary,
+          tags: [],
+          createdAt: new Date("2026-09-09T00:00:00.000Z"),
+        };
+        stored.push(event);
+        return event;
+      },
+    },
+    [
+      {
+        candidates: [
+          {
+            kind: "daily_event",
+            eventDate: "2026-09-08",
+            summary: "Visited the museum",
+          },
+        ],
+      },
+      {
+        candidates: [
+          {
+            kind: "daily_event",
+            eventDate: "2026-09-08",
+            summary: "Visited the museum",
+          },
+        ],
+      },
+    ],
+  );
+  const input = {
+    userId: "user-1",
+    turn: {
+      botId: "ao",
+      threadId: "thread-1",
+      kind: "human" as const,
+      createdAtIso: "2026-09-09T00:00:00.000Z",
+      messages: [
+        {
+          role: "user" as const,
+          content: "I visited the museum yesterday.",
+          timestampIso: "2026-09-09T00:00:00.000Z",
+        },
+      ],
+    },
+  };
+
+  assert.equal((await service.processTurnMemoryCandidates(input)).dailyEvents[0]?.action, "created");
+  assert.equal((await service.processTurnMemoryCandidates(input)).dailyEvents[0]?.action, "kept");
+  assert.equal(stored.length, 1);
+});
+
+test("processTurnMemoryCandidates ignores proactive turns before calling the model", async () => {
+  const service = createStubbedService({}, []);
+  const result = await service.processTurnMemoryCandidates({
+    userId: "user-1",
+    turn: {
+      botId: "ao",
+      threadId: "thread-1",
+      kind: "proactive",
+      createdAtIso: "2026-09-09T00:00:00.000Z",
+      messages: [],
+    },
+  });
+  assert.deepEqual(result, {
+    status: "ignored",
+    candidates: [],
+    userMemory: [],
+    dailyEvents: [],
+  });
+});
+
+test("pending memory batch claims a TurnRecord once across concurrent runs", async () => {
+  const turn: TurnRecord = {
+    id: "turn-1",
+    botId: "ao",
+    threadId: "thread-1",
+    kind: "human",
+    createdAtIso: "2026-09-09T00:00:00.000Z",
+    messages: [],
+  };
+  let claimed = false;
+  let processed = 0;
+  const service = createStubbedService({
+    fetchPendingTurnMemoryRecords: async () => [turn],
+    claimTurnMemoryRecord: async () => {
+      if (claimed) return false;
+      claimed = true;
+      return true;
+    },
+    completeTurnMemoryRecord: async () => {},
+  });
+  service.processTurnMemoryCandidates = async () => {
+    processed += 1;
+    await Promise.resolve();
+    return { status: "processed", candidates: [], userMemory: [], dailyEvents: [] };
+  };
+
+  const results = await Promise.all([
+    service.processPendingTurnMemories({ botId: "ao", userId: "user-1", limit: 5, concurrency: 2 }),
+    service.processPendingTurnMemories({ botId: "ao", userId: "user-1", limit: 5, concurrency: 2 }),
+  ]);
+
+  assert.equal(processed, 1);
+  assert.equal(results.reduce((sum, result) => sum + result.claimed, 0), 1);
+});
+
+test("failed pending memory records are released and recovered on the next run", async () => {
+  const turn: TurnRecord = {
+    id: "turn-retry",
+    botId: "ao",
+    threadId: "thread-1",
+    kind: "human",
+    createdAtIso: "2026-09-09T00:00:00.000Z",
+    messages: [],
+  };
+  let claimed = false;
+  let attempts = 0;
+  let completions = 0;
+  const service = createStubbedService({
+    fetchPendingTurnMemoryRecords: async () => [turn],
+    claimTurnMemoryRecord: async () => {
+      if (claimed) return false;
+      claimed = true;
+      return true;
+    },
+    releaseTurnMemoryRecord: async () => { claimed = false; },
+    completeTurnMemoryRecord: async () => { completions += 1; },
+  });
+  service.processTurnMemoryCandidates = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("temporary classifier failure");
+    return { status: "processed", candidates: [], userMemory: [], dailyEvents: [] };
+  };
+
+  const first = await service.processPendingTurnMemories({
+    botId: "ao", userId: "user-1", limit: 5, concurrency: 2,
+  });
+  const second = await service.processPendingTurnMemories({
+    botId: "ao", userId: "user-1", limit: 5, concurrency: 2,
+  });
+
+  assert.equal(first.failed, 1);
+  assert.equal(second.processed, 1);
+  assert.equal(attempts, 2);
+  assert.equal(completions, 1);
+});
+
+test("pending memory batch never classifies proactive or delegation records", async () => {
+  const turns: TurnRecord[] = ["proactive", "delegation"].map((kind, index) => ({
+    id: `turn-${index}`,
+    botId: "ao",
+    threadId: "thread-1",
+    kind: kind as "proactive" | "delegation",
+    createdAtIso: "2026-09-09T00:00:00.000Z",
+    messages: [],
+  }));
+  let modelCalls = 0;
+  const completed: string[] = [];
+  const service = createStubbedService({
+    fetchPendingTurnMemoryRecords: async () => turns,
+    claimTurnMemoryRecord: async () => true,
+    completeTurnMemoryRecord: async (id) => { completed.push(id); },
+  });
+  service.llm.generateJson = async () => {
+    modelCalls += 1;
+    return {} as never;
+  };
+
+  await service.processPendingTurnMemories({
+    botId: "ao", userId: "user-1", limit: 5, concurrency: 2,
+  });
+
+  assert.equal(modelCalls, 0);
+  assert.deepEqual(completed.sort(), ["turn-0", "turn-1"]);
+});
+
 const createStubbedService = (
   repositoryOverrides: Partial<RepositoryStub>,
   responses: unknown[] = [],
@@ -712,9 +956,14 @@ const createStubbedService = (
     }),
     searchDailyEvents: async () => [],
     getDailyEventsByDate: async () => [],
+    getDailyEventDateRange: async () => undefined,
     upsertTurnSearchIndex: async () => {},
     fetchTurnSearchCandidates: async () => [],
     fetchUnindexedTurnRecords: async () => [],
+    fetchPendingTurnMemoryRecords: async () => [],
+    claimTurnMemoryRecord: async () => false,
+    completeTurnMemoryRecord: async () => {},
+    releaseTurnMemoryRecord: async () => {},
     ...repositoryOverrides,
   };
   return service;
