@@ -1,4 +1,5 @@
 import {
+  bigint,
   bigserial,
   index,
   integer,
@@ -18,6 +19,20 @@ import {
 } from "../../domain/types";
 
 const appSchema = pgSchema("app");
+
+export const memoryUserNoteSearchIndexTable = appSchema.table(
+  "memory_user_note_search_index",
+  {
+    noteId: bigint("note_id", { mode: "number" }).primaryKey(),
+    userId: text("user_id").notNull(),
+    note: text("note").notNull(),
+    embeddingJson: jsonb("embedding_json").$type<number[]>().notNull(),
+    indexedAt: timestamp("indexed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("memory_user_note_search_user_idx").on(table.userId)],
+);
 
 export const userNotesTable = pgTable(
   "user_notes",

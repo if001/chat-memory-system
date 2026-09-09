@@ -22,6 +22,7 @@ import {
 } from "../../domain/types";
 import { ensureTurnRecordId } from "../../domain/identifiers";
 import { UserNote } from "../../domain/userMemory";
+import { UserMemorySearchIndexEntry } from "../../application/usecases/userMemorySearch";
 import {
   DailyEvent,
   GetDailyEventsByDateInput,
@@ -36,6 +37,7 @@ import {
   memoryEpisodeCasesTable,
   memoryPolicyCardsTable,
   memoryTurnRecordsTable,
+  memoryUserNoteSearchIndexTable,
   userNotesTable,
   dailyEventsTable,
   memoryTurnSearchIndexTable,
@@ -143,6 +145,81 @@ export class MemoryRepository {
       )
       .returning({ id: userNotesTable.id });
     return rows.length > 0;
+  }
+
+  async upsertUserMemorySearchIndex(
+    entry: UserMemorySearchIndexEntry,
+  ): Promise<void> {
+    const values = {
+      noteId: entry.noteId,
+      userId: entry.userId,
+      note: entry.note,
+      embeddingJson: entry.embedding,
+      indexedAt: new Date(),
+    };
+    await this.db
+      .insert(memoryUserNoteSearchIndexTable)
+      .values(values)
+      .onConflictDoUpdate({
+        target: memoryUserNoteSearchIndexTable.noteId,
+        set: values,
+      });
+  }
+
+  async deleteUserMemorySearchIndex(noteId: number): Promise<void> {
+    await this.db
+      .delete(memoryUserNoteSearchIndexTable)
+      .where(eq(memoryUserNoteSearchIndexTable.noteId, noteId));
+  }
+
+  async fetchUserMemorySearchCandidates(
+    userId: string,
+    limit: number,
+  ): Promise<Array<UserMemorySearchIndexEntry & { createdAt: Date }>> {
+    const rows = await this.db
+      .select({
+        index: memoryUserNoteSearchIndexTable,
+        createdAt: userNotesTable.createdAt,
+      })
+      .from(memoryUserNoteSearchIndexTable)
+      .innerJoin(
+        userNotesTable,
+        and(
+          eq(userNotesTable.id, memoryUserNoteSearchIndexTable.noteId),
+          eq(userNotesTable.userId, memoryUserNoteSearchIndexTable.userId),
+        ),
+      )
+      .where(eq(memoryUserNoteSearchIndexTable.userId, userId))
+      .limit(limit);
+    return rows.map((row) => ({
+      noteId: row.index.noteId,
+      userId: row.index.userId,
+      note: row.index.note,
+      embedding: row.index.embeddingJson,
+      createdAt: new Date(row.createdAt),
+    }));
+  }
+
+  async fetchUnindexedUserNotes(
+    userId: string,
+    limit: number,
+  ): Promise<UserNote[]> {
+    const rows = await this.db
+      .select({ note: userNotesTable })
+      .from(userNotesTable)
+      .leftJoin(
+        memoryUserNoteSearchIndexTable,
+        eq(userNotesTable.id, memoryUserNoteSearchIndexTable.noteId),
+      )
+      .where(
+        and(
+          eq(userNotesTable.userId, userId),
+          isNull(memoryUserNoteSearchIndexTable.noteId),
+        ),
+      )
+      .orderBy(userNotesTable.createdAt)
+      .limit(limit);
+    return rows.map(({ note }) => mapUserNote(note));
   }
 
   async rememberDailyEvent(input: RememberDailyEventInput): Promise<DailyEvent> {

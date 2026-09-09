@@ -14,7 +14,10 @@ import { buildPolicyQueryContext } from "../application/usecases/buildPolicyQuer
 import { extractEpisodeCasesFromChunk } from "../application/usecases/extractEpisodeCase";
 import { filterApplicablePolicyCards } from "../application/usecases/filterApplicablePolicyCards";
 import { updatePolicyCardFromEpisode } from "../application/usecases/updatePolicyCard";
-import { OllamaEmbeddingClient } from "../infrastructure/ollama/embeddingClient";
+import {
+  OllamaEmbeddingClient,
+  TextEmbeddingClient,
+} from "../infrastructure/ollama/embeddingClient";
 import { OllamaClient } from "../infrastructure/ollama/client";
 import {
   createFileCachedJsonClient,
@@ -31,6 +34,7 @@ import {
   UserNote,
   decideUserMemoryWrite,
 } from "../domain/userMemory";
+import { rankUserMemory } from "../application/usecases/userMemorySearch";
 import {
   DailyEvent,
   GetDailyEventsByDateInput,
@@ -64,6 +68,7 @@ export interface MemorySystemOptions {
   policyQueryHistoryTurns?: number;
   policyQueryHistoryMaxTokens?: number;
   agentInitiatedResponseMaxHours?: number;
+  embeddingProvider?: TextEmbeddingClient;
 }
 
 export interface QueryPolicyInput {
@@ -113,6 +118,10 @@ export interface MemorySystemService {
     note: string;
   }): Promise<UserMemoryWriteResult>;
   deleteUserNote(input: { userId: string; noteId: number }): Promise<boolean>;
+  backfillUserMemorySearchIndex(
+    userId: string,
+    limit?: number,
+  ): Promise<number>;
   rememberDailyEvent(input: RememberDailyEventInput): Promise<DailyEvent>;
   searchDailyEvents(input: SearchDailyEventsInput): Promise<DailyEvent[]>;
   getDailyEventsByDate(input: GetDailyEventsByDateInput): Promise<DailyEvent[]>;
@@ -145,7 +154,9 @@ class DefaultMemorySystemService implements MemorySystemService {
       },
     );
     this.repository = new MemoryRepository(options.postgresUrl);
-    if (options.ollamaEmbeddingModel) {
+    if (options.embeddingProvider) {
+      this.embedText = (text: string) => options.embeddingProvider!.embed(text);
+    } else if (options.ollamaEmbeddingModel) {
       const embeddingClient = new OllamaEmbeddingClient(
         options.ollamaEmbeddingBaseUrl ?? options.ollamaBaseUrl,
         options.ollamaEmbeddingModel,
@@ -359,37 +370,70 @@ class DefaultMemorySystemService implements MemorySystemService {
         }
         continue;
       }
-      if (scope !== "policy_cards") {
+      if (scope === "policy_cards") {
+        const cards = await this.queryApplicablePolicyCards({
+          botId: request.botId,
+          threadId: request.threadId,
+          currentContext: request.query,
+          limit: Math.min(request.limits?.policy_cards ?? 3, 3),
+        });
+        result.policyCards = cards.length
+          ? {
+              status: "found",
+              data: cards.slice(0, 3).map((card) => ({
+                policyCardId: card.id,
+                appliesWhen: card.appliesWhen,
+                recommendedBehavior: card.recommendedBehavior,
+                ...(card.avoidBehavior
+                  ? { avoidBehavior: card.avoidBehavior }
+                  : {}),
+              })),
+            }
+          : { status: "not_found" };
+        continue;
+      }
+      if (scope !== "user_memory") {
         const unavailable = {
           status: "unavailable",
           reason: `${scope} search is not implemented`,
         } as const;
-        if (scope === "user_memory") {
-          result.userMemory = unavailable;
-        } else {
-          result.dailyEvents = unavailable;
-        }
+        result.dailyEvents = unavailable;
         continue;
       }
-      const cards = await this.queryApplicablePolicyCards({
-        botId: request.botId,
-        threadId: request.threadId,
-        currentContext: request.query,
-        limit: Math.min(request.limits?.policy_cards ?? 3, 3),
-      });
-      result.policyCards = cards.length
-        ? {
-            status: "found",
-            data: cards.slice(0, 3).map((card) => ({
-              policyCardId: card.id,
-              appliesWhen: card.appliesWhen,
-              recommendedBehavior: card.recommendedBehavior,
-              ...(card.avoidBehavior
-                ? { avoidBehavior: card.avoidBehavior }
-                : {}),
-            })),
-          }
-        : { status: "not_found" };
+      if (!this.embedText) {
+        result.userMemory = {
+          status: "unavailable",
+          reason: "UserMemory embedding provider is not configured",
+        };
+        continue;
+      }
+      try {
+        const limit = request.limits?.user_memory ?? 5;
+        const [rawQueryEmbedding, candidates] = await Promise.all([
+          this.embedText(request.query),
+          this.repository.fetchUserMemorySearchCandidates(
+            request.userId,
+            Math.max(limit * 10, 100),
+          ),
+        ]);
+        const memories = rankUserMemory(
+          request.query,
+          requireEmbedding(rawQueryEmbedding),
+          candidates,
+        ).slice(0, limit);
+        result.userMemory = memories.length
+          ? {
+              status: "found",
+              data: memories.map(({ id, note }) => ({ noteId: id, note })),
+            }
+          : { status: "not_found" };
+      } catch (error) {
+        result.userMemory = {
+          status: "unavailable",
+          reason:
+            error instanceof Error ? error.message : "UserMemory search failed",
+        };
+      }
     }
     return result;
   }
@@ -425,7 +469,30 @@ class DefaultMemorySystemService implements MemorySystemService {
     userId: string;
     noteId: number;
   }): Promise<boolean> {
-    return this.repository.deleteUserNote(input.userId, input.noteId);
+    const deleted = await this.repository.deleteUserNote(
+      input.userId,
+      input.noteId,
+    );
+    if (deleted) await this.deleteUserMemorySearchIndexBestEffort(input.noteId);
+    return deleted;
+  }
+
+  async backfillUserMemorySearchIndex(
+    userId: string,
+    limit: number = 100,
+  ): Promise<number> {
+    if (!this.embedText) return 0;
+    const notes = await this.repository.fetchUnindexedUserNotes(userId, limit);
+    let indexed = 0;
+    for (const note of notes) {
+      try {
+        await this.indexUserNote(userId, note);
+        indexed += 1;
+      } catch {
+        // The canonical note remains available and unindexed for a later retry.
+      }
+    }
+    return indexed;
   }
 
   private async executeUserMemoryWrite(
@@ -464,6 +531,7 @@ class DefaultMemorySystemService implements MemorySystemService {
     }
     if (decision.action === "create") {
       const note = await this.repository.rememberUserNote(userId, proposedNote);
+      await this.indexUserNoteBestEffort(userId, note);
       return { ok: true, action: decision.action, reason: decision.reason, note };
     }
     const target = candidates.find(
@@ -473,6 +541,7 @@ class DefaultMemorySystemService implements MemorySystemService {
       return { ok: false, error: "UserMemory write target was not found." };
     }
     if (decision.action === "keep_existing") {
+      await this.indexUserNoteBestEffort(userId, target);
       return {
         ok: true,
         action: decision.action,
@@ -486,6 +555,8 @@ class DefaultMemorySystemService implements MemorySystemService {
         target.id,
         proposedNote,
       );
+      await this.deleteUserMemorySearchIndexBestEffort(target.id);
+      if (note) await this.indexUserNoteBestEffort(userId, note);
       return {
         ok: note !== null,
         action: decision.action,
@@ -494,12 +565,45 @@ class DefaultMemorySystemService implements MemorySystemService {
       };
     }
     const deleted = await this.repository.deleteUserNote(userId, target.id);
+    if (deleted) await this.deleteUserMemorySearchIndexBestEffort(target.id);
     return {
       ok: deleted,
       action: decision.action,
       reason: decision.reason,
       deletedNoteId: target.id,
     };
+  }
+
+  private async indexUserNote(userId: string, note: UserNote): Promise<void> {
+    if (!this.embedText) return;
+    const embedding = requireEmbedding(await this.embedText(note.note));
+    await this.repository.upsertUserMemorySearchIndex({
+      noteId: note.id,
+      userId,
+      note: note.note,
+      embedding,
+    });
+  }
+
+  private async indexUserNoteBestEffort(
+    userId: string,
+    note: UserNote,
+  ): Promise<void> {
+    try {
+      await this.indexUserNote(userId, note);
+    } catch {
+      // Search indexing is rebuildable and must not make the canonical write fail.
+    }
+  }
+
+  private async deleteUserMemorySearchIndexBestEffort(
+    noteId: number,
+  ): Promise<void> {
+    try {
+      await this.repository.deleteUserMemorySearchIndex(noteId);
+    } catch {
+      // Stale index rows cannot surface after canonical deletion because reads join notes.
+    }
   }
 
   async rememberDailyEvent(input: RememberDailyEventInput): Promise<DailyEvent> {
@@ -615,6 +719,16 @@ const rejectedMemoryDestination = (
     reject: "Content is not suitable for automatic memory storage.",
   } as const;
   return { ok: false, destination, reason, error: errors[destination] };
+};
+
+const requireEmbedding = (embedding: number[]): number[] => {
+  if (
+    embedding.length === 0 ||
+    embedding.some((value) => !Number.isFinite(value))
+  ) {
+    throw new Error("Embedding provider returned an invalid vector");
+  }
+  return embedding;
 };
 
 export const createMemorySystemService = (

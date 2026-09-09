@@ -14,6 +14,7 @@ import { UserNote } from "../src/memory_system/domain/userMemory";
 import { DailyEvent } from "../src/memory_system/domain/dailyEvent";
 import { TurnSearchIndexEntry } from "../src/memory_system/application/usecases/turnSearchIndex";
 import { TurnRecordSearchRequest } from "../src/memory_system/api/contracts";
+import { UserMemorySearchIndexEntry } from "../src/memory_system/application/usecases/userMemorySearch";
 
 type RepositoryStub = {
   saveTurnRecord(input: TurnRecord): Promise<void>;
@@ -42,6 +43,13 @@ type RepositoryStub = {
     note: string,
   ): Promise<UserNote | null>;
   deleteUserNote(userId: string, noteId: number): Promise<boolean>;
+  upsertUserMemorySearchIndex(entry: UserMemorySearchIndexEntry): Promise<void>;
+  deleteUserMemorySearchIndex(noteId: number): Promise<void>;
+  fetchUserMemorySearchCandidates(
+    userId: string,
+    limit: number,
+  ): Promise<Array<UserMemorySearchIndexEntry & { createdAt: Date }>>;
+  fetchUnindexedUserNotes(userId: string, limit: number): Promise<UserNote[]>;
   rememberDailyEvent(input: {
     userId: string;
     eventDate: string;
@@ -319,6 +327,175 @@ test("replaceUserNote removes the old correction target from subsequent searches
   );
 });
 
+test("search ranks semantic UserMemory matches and does not expose scores", async () => {
+  const service = createStubbedService(
+    {
+      fetchUserMemorySearchCandidates: async (userId) => {
+        assert.equal(userId, "shared-user");
+        return [
+          {
+            noteId: 1,
+            userId,
+            note: "I enjoy improvisational jazz",
+            embedding: [1, 0],
+            createdAt: new Date("2026-09-09T00:00:00.000Z"),
+          },
+          {
+            noteId: 2,
+            userId,
+            note: "My preferred editor theme is dark",
+            embedding: [0, 1],
+            createdAt: new Date("2026-09-09T00:01:00.000Z"),
+          },
+        ];
+      },
+    },
+    [],
+    { embed: async () => [1, 0] },
+  );
+
+  const result = await service.search({
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "shared-user",
+    query: "What kind of music do I like?",
+    scopes: ["user_memory"],
+  });
+
+  assert.deepEqual(result.userMemory, {
+    status: "found",
+    data: [{ noteId: 1, note: "I enjoy improvisational jazz" }],
+  });
+  assert.equal(
+    "score" in
+      (result.userMemory?.status === "found"
+        ? result.userMemory.data[0]!
+        : {}),
+    false,
+  );
+});
+
+test("UserMemory search reports embedding failures as unavailable", async () => {
+  const service = createStubbedService({});
+  service.embedText = async () => {
+    throw new Error("embedding service offline");
+  };
+
+  const result = await service.search({
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "shared-user",
+    query: "music",
+    scopes: ["user_memory"],
+  });
+
+  assert.deepEqual(result.userMemory, {
+    status: "unavailable",
+    reason: "embedding service offline",
+  });
+});
+
+test("UserMemory create keeps the canonical write when indexing fails", async () => {
+  let writes = 0;
+  const service = createStubbedService(
+    {
+      rememberUserNote: async (_userId, note) => {
+        writes += 1;
+        return {
+          id: 7,
+          note,
+          createdAt: new Date("2026-09-09T00:00:00.000Z"),
+        };
+      },
+    },
+    [{ destination: "user_memory", action: "create", reason: "new preference" }],
+  );
+  service.embedText = async () => {
+    throw new Error("embedding service offline");
+  };
+
+  const result = await service.rememberUserNote({
+    userId: "shared-user",
+    note: "I like jazz",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.note?.id, 7);
+  assert.equal(writes, 1);
+});
+
+test("replace and delete update the UserMemory search index", async () => {
+  const deletedIndexIds: number[] = [];
+  const indexed: UserMemorySearchIndexEntry[] = [];
+  const existing = {
+    id: 3,
+    note: "Prefer concise answers",
+    createdAt: new Date("2026-09-09T00:00:00.000Z"),
+  };
+  const service = createStubbedService(
+    {
+      searchUserNotes: async () => [existing],
+      replaceUserNote: async (_userId, id, note) => ({ ...existing, id, note }),
+      deleteUserNote: async () => true,
+      deleteUserMemorySearchIndex: async (id) => {
+        deletedIndexIds.push(id);
+      },
+      upsertUserMemorySearchIndex: async (entry) => {
+        indexed.push(entry);
+      },
+    },
+    [
+      {
+        destination: "user_memory",
+        action: "replace",
+        targetNoteId: 3,
+        reason: "correction",
+      },
+    ],
+  );
+  service.embedText = async () => [0.5, 0.5];
+
+  await service.replaceUserNote({
+    userId: "shared-user",
+    noteId: 3,
+    note: "Prefer detailed answers",
+  });
+  await service.deleteUserNote({ userId: "shared-user", noteId: 3 });
+
+  assert.deepEqual(deletedIndexIds, [3, 3]);
+  assert.deepEqual(indexed, [
+    {
+      noteId: 3,
+      userId: "shared-user",
+      note: "Prefer detailed answers",
+      embedding: [0.5, 0.5],
+    },
+  ]);
+});
+
+test("UserMemory index backfill is retryable and idempotent", async () => {
+  const pending: UserNote[] = [
+    {
+      id: 5,
+      note: "I like jazz",
+      createdAt: new Date("2026-09-09T00:00:00.000Z"),
+    },
+  ];
+  const service = createStubbedService({
+    fetchUnindexedUserNotes: async (userId) => {
+      assert.equal(userId, "shared-user");
+      return [...pending];
+    },
+    upsertUserMemorySearchIndex: async () => {
+      pending.splice(0);
+    },
+  });
+  service.embedText = async () => [1, 0];
+
+  assert.equal(await service.backfillUserMemorySearchIndex("shared-user"), 1);
+  assert.equal(await service.backfillUserMemorySearchIndex("shared-user"), 0);
+});
+
 test("DailyEvent service keeps user scope and structured date filters", async () => {
   const calls: Array<{
     userId: string;
@@ -481,12 +658,14 @@ test("backfillTurnSearchIndex is idempotent after indexing canonical turns", asy
 const createStubbedService = (
   repositoryOverrides: Partial<RepositoryStub>,
   responses: unknown[] = [],
+  embeddingProvider?: { embed(text: string): Promise<number[]> },
 ): StubbedService => {
   const service = createMemorySystemService({
     postgresUrl: "postgres://example.invalid",
     ollamaBaseUrl: "http://ollama.invalid",
     ollamaModel: "stub",
     ollamaAPIKey: "stub",
+    embeddingProvider,
   }) as StubbedService;
   service.llm = {
     async generateJson<T>(): Promise<T> {
@@ -519,6 +698,10 @@ const createStubbedService = (
     searchUserNotes: async () => [],
     replaceUserNote: async () => null,
     deleteUserNote: async () => false,
+    upsertUserMemorySearchIndex: async () => {},
+    deleteUserMemorySearchIndex: async () => {},
+    fetchUserMemorySearchCandidates: async () => [],
+    fetchUnindexedUserNotes: async () => [],
     rememberDailyEvent: async (input) => ({
       id: 1,
       userId: input.userId,
