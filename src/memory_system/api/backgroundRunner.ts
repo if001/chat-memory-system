@@ -45,9 +45,7 @@ export const createMemoryBackgroundRunner = (
   let inFlight: Promise<void> | null = null;
 
   const runOnce = async (): Promise<void> => {
-    console.log("run");
     const threadIds = await service.listThreadIds(options.botId, threadLimit);
-    console.log("threadIds", threadIds);
     for (const threadId of threadIds) {
       await service.buildConversationChunksForThread(
         options.botId,
@@ -64,7 +62,6 @@ export const createMemoryBackgroundRunner = (
     });
     await service.processPendingEpisodes(options.botId, episodeLimit);
     await service.buildOrUpdatePolicyCards(options.botId, policyLimit);
-    console.log("----------- end --------------");
   };
 
   const tick = (): void => {
@@ -72,12 +69,8 @@ export const createMemoryBackgroundRunner = (
       return;
     }
     inFlight = runOnce()
-      .catch((error: unknown) => {
-        const message =
-          error instanceof Error
-            ? (error.stack ?? error.message)
-            : String(error);
-        process.stdout.write(`[memory-background-error] ${message}\n`);
+      .catch(() => {
+        process.stdout.write("[memory-background-error] cycle failed\n");
       })
       .finally(() => {
         inFlight = null;

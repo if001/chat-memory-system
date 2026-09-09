@@ -251,15 +251,7 @@ class DefaultMemorySystemService implements MemorySystemService {
       threadId,
       limit,
     );
-    console.log(
-      "[buildConversationChunksForThread]: turnRecords.length=",
-      turnRecords.length,
-    );
     const chunks = buildConversationChunks(turnRecords, this.chunkingConfig);
-    console.log(
-      "[buildConversationChunksForThread]: chunks.length=",
-      chunks.length,
-    );
     await this.repository.saveConversationChunks(chunks);
     return chunks;
   }
@@ -299,14 +291,12 @@ class DefaultMemorySystemService implements MemorySystemService {
     botId: string,
     limit: number = 20,
   ): Promise<PolicyCard[]> {
-    console.log("[buildOrUpdatePolicyCards]: start");
     const episodes = await this.repository.fetchPendingEpisodes(botId, limit);
     if (episodes.length === 0) {
       return [];
     }
 
     const updatedCards: PolicyCard[] = [];
-    console.log("[buildOrUpdatePolicyCards]: episodes.len=", episodes.length);
     for (const episode of episodes) {
       const existingCards = await this.repository.fetchPolicyCards(botId, 100);
       const episodeIds = existingCards.flatMap(
@@ -340,7 +330,6 @@ class DefaultMemorySystemService implements MemorySystemService {
       );
       await this.repository.markEpisodeProcessed(episode.id);
     }
-    console.log("[buildOrUpdatePolicyCards]: done");
     return updatedCards;
   }
 
@@ -392,13 +381,10 @@ class DefaultMemorySystemService implements MemorySystemService {
                 })),
               }
             : { status: "not_found" };
-        } catch (error) {
+        } catch {
           result.conversationHistory = {
             status: "unavailable",
-            reason:
-              error instanceof Error
-                ? error.message
-                : "TurnRecord search failed",
+            reason: "TurnRecord search failed",
           };
         }
         continue;
@@ -460,11 +446,10 @@ class DefaultMemorySystemService implements MemorySystemService {
               data: memories.map(({ id, note }) => ({ noteId: id, note })),
             }
           : { status: "not_found" };
-      } catch (error) {
+      } catch {
         result.userMemory = {
           status: "unavailable",
-          reason:
-            error instanceof Error ? error.message : "UserMemory search failed",
+          reason: "UserMemory search failed",
         };
       }
     }
@@ -628,15 +613,17 @@ class DefaultMemorySystemService implements MemorySystemService {
       if (!claimed) return;
       result.claimed += 1;
       try {
-        await this.processTurnMemoryCandidates({ userId: input.userId, turn: record });
+        await this.processTurnMemoryCandidates({
+          userId: input.userId,
+          turn: record,
+        });
         await this.repository.completeTurnMemoryRecord(record.id, new Date());
         result.processed += 1;
-      } catch (error) {
+      } catch {
         result.failed += 1;
         await this.repository.releaseTurnMemoryRecord(record.id);
-        const detail = error instanceof Error ? error.message : String(error);
         process.stdout.write(
-          `[memory-candidate-error] turnRecordId=${record.id} detail=${detail}\n`,
+          `[memory-candidate-error] turnRecordId=${record.id}\n`,
         );
       }
     });
@@ -983,12 +970,12 @@ const catalogEntry = async (load: () => Promise<{
       ...(loaded.updatedAt ? { updatedAt: loaded.updatedAt } : {}),
       ...(loaded.dateRange ? { dateRange: loaded.dateRange } : {}),
     };
-  } catch (error) {
+  } catch {
     return {
       status: "unavailable",
       available: false,
       topics: [],
-      reason: error instanceof Error ? error.message : "Catalog backend failed",
+      reason: "Catalog backend failed",
     };
   }
 };

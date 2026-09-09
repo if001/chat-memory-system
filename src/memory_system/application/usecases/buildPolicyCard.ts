@@ -15,7 +15,6 @@ export const buildPolicyHypothesisFromEpisodes = async (
   if (episodes.length === 0) {
     throw new Error("buildPolicyHypothesisFromEpisodes requires episodes");
   }
-  console.log("[buildPolicyHypothesisFromEpisodes]: call llm");
   const parsed = await llm.generateJson<BuildPolicyHypothesisResult>(
     [
       "あなたは、ユーザーと対話するAgentの行動方針を抽出するPolicy分析器です。",
@@ -50,16 +49,6 @@ export const buildPolicyHypothesisFromEpisodes = async (
     "recommendedBehavior",
   );
   const avoidBehavior = parsed.avoidBehavior?.trim();
-
-  console.log(
-    "[buildPolicyHypothesisFromEpisodes]: base episode",
-    episodesForLlm(episodes),
-  );
-  console.log("[buildPolicyHypothesisFromEpisodes]: hypothesis", {
-    appliesWhen,
-    recommendedBehavior,
-    avoidBehavior,
-  });
 
   return {
     appliesWhen,
