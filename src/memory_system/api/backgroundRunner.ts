@@ -45,7 +45,9 @@ export const createMemoryBackgroundRunner = (
   let inFlight: Promise<void> | null = null;
 
   const runOnce = async (): Promise<void> => {
+    console.log("[memory-background] cycle start");
     const threadIds = await service.listThreadIds(options.botId, threadLimit);
+    console.log("[memory-background] threads", threadIds.length);
     for (const threadId of threadIds) {
       await service.buildConversationChunksForThread(
         options.botId,
@@ -62,6 +64,7 @@ export const createMemoryBackgroundRunner = (
     });
     await service.processPendingEpisodes(options.botId, episodeLimit);
     await service.buildOrUpdatePolicyCards(options.botId, policyLimit);
+    console.log("[memory-background] cycle complete");
   };
 
   const tick = (): void => {

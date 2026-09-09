@@ -17,6 +17,7 @@ export const filterApplicablePolicyCards = async (
     "JSON のみを返してください。",
   ].join(" ");
 
+  console.log("[filterApplicablePolicyCards]: cards.len", cards.length);
   const userPrompt = JSON.stringify({
     currentContext,
     policyCards: policyCardsForLlm(cards),
@@ -26,5 +27,6 @@ export const filterApplicablePolicyCards = async (
     userPrompt,
   );
   const selected = new Set(parsed ?? []);
+  console.log("[filterApplicablePolicyCards]: selected.len", selected.size);
   return cards.filter((card) => selected.has(card.id));
 };

@@ -251,7 +251,15 @@ class DefaultMemorySystemService implements MemorySystemService {
       threadId,
       limit,
     );
+    console.log(
+      "[buildConversationChunksForThread]: turnRecords.length=",
+      turnRecords.length,
+    );
     const chunks = buildConversationChunks(turnRecords, this.chunkingConfig);
+    console.log(
+      "[buildConversationChunksForThread]: chunks.length=",
+      chunks.length,
+    );
     await this.repository.saveConversationChunks(chunks);
     return chunks;
   }
@@ -291,12 +299,14 @@ class DefaultMemorySystemService implements MemorySystemService {
     botId: string,
     limit: number = 20,
   ): Promise<PolicyCard[]> {
+    console.log("[buildOrUpdatePolicyCards]: start");
     const episodes = await this.repository.fetchPendingEpisodes(botId, limit);
     if (episodes.length === 0) {
       return [];
     }
 
     const updatedCards: PolicyCard[] = [];
+    console.log("[buildOrUpdatePolicyCards]: episodes.len=", episodes.length);
     for (const episode of episodes) {
       const existingCards = await this.repository.fetchPolicyCards(botId, 100);
       const episodeIds = existingCards.flatMap(
@@ -330,6 +340,7 @@ class DefaultMemorySystemService implements MemorySystemService {
       );
       await this.repository.markEpisodeProcessed(episode.id);
     }
+    console.log("[buildOrUpdatePolicyCards]: done");
     return updatedCards;
   }
 
