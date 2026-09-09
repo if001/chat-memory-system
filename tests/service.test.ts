@@ -709,6 +709,87 @@ test("inspectCatalog isolates unavailable and empty memory areas", async () => {
   assert.equal(catalog.policyCards.status, "unavailable");
 });
 
+test("processTurnMemoryCandidates creates then keeps the same DailyEvent", async () => {
+  const stored: DailyEvent[] = [];
+  const service = createStubbedService(
+    {
+      searchDailyEvents: async () => stored,
+      rememberDailyEvent: async (input) => {
+        const event = {
+          id: 1,
+          userId: input.userId,
+          eventDate: input.eventDate,
+          summary: input.summary,
+          tags: [],
+          createdAt: new Date("2026-09-09T00:00:00.000Z"),
+        };
+        stored.push(event);
+        return event;
+      },
+    },
+    [
+      {
+        candidates: [
+          {
+            kind: "daily_event",
+            eventDate: "2026-09-08",
+            summary: "Visited the museum",
+          },
+        ],
+      },
+      {
+        candidates: [
+          {
+            kind: "daily_event",
+            eventDate: "2026-09-08",
+            summary: "Visited the museum",
+          },
+        ],
+      },
+    ],
+  );
+  const input = {
+    userId: "user-1",
+    turn: {
+      botId: "ao",
+      threadId: "thread-1",
+      kind: "human" as const,
+      createdAtIso: "2026-09-09T00:00:00.000Z",
+      messages: [
+        {
+          role: "user" as const,
+          content: "I visited the museum yesterday.",
+          timestampIso: "2026-09-09T00:00:00.000Z",
+        },
+      ],
+    },
+  };
+
+  assert.equal((await service.processTurnMemoryCandidates(input)).dailyEvents[0]?.action, "created");
+  assert.equal((await service.processTurnMemoryCandidates(input)).dailyEvents[0]?.action, "kept");
+  assert.equal(stored.length, 1);
+});
+
+test("processTurnMemoryCandidates ignores proactive turns before calling the model", async () => {
+  const service = createStubbedService({}, []);
+  const result = await service.processTurnMemoryCandidates({
+    userId: "user-1",
+    turn: {
+      botId: "ao",
+      threadId: "thread-1",
+      kind: "proactive",
+      createdAtIso: "2026-09-09T00:00:00.000Z",
+      messages: [],
+    },
+  });
+  assert.deepEqual(result, {
+    status: "ignored",
+    candidates: [],
+    userMemory: [],
+    dailyEvents: [],
+  });
+});
+
 const createStubbedService = (
   repositoryOverrides: Partial<RepositoryStub>,
   responses: unknown[] = [],

@@ -55,6 +55,10 @@ import {
   cosineSimilarity,
 } from "../application/usecases/turnSearchIndex";
 import { join } from "node:path";
+import {
+  classifyTurnMemoryCandidates,
+  TurnMemoryCandidate,
+} from "../application/usecases/classifyTurnMemoryCandidates";
 
 export interface MemorySystemOptions {
   postgresUrl: string;
@@ -79,6 +83,13 @@ export interface QueryPolicyInput {
   threadId: string;
   currentContext: string;
   limit?: number;
+}
+
+export interface TurnMemoryProcessingResult {
+  status: "processed" | "ignored";
+  candidates: TurnMemoryCandidate[];
+  userMemory: UserMemoryWriteResult[];
+  dailyEvents: Array<{ action: "created" | "kept"; event: DailyEvent }>;
 }
 
 export interface MemorySystemService {
@@ -133,6 +144,10 @@ export interface MemorySystemService {
     input: TurnRecordSearchRequest,
   ): Promise<TurnRecordSearchItem[]>;
   backfillTurnSearchIndex(botId: string, limit?: number): Promise<number>;
+  processTurnMemoryCandidates(input: {
+    userId: string;
+    turn: TurnRecord;
+  }): Promise<TurnMemoryProcessingResult>;
 }
 
 class DefaultMemorySystemService implements MemorySystemService {
@@ -513,6 +528,60 @@ class DefaultMemorySystemService implements MemorySystemService {
     };
   }
 
+  async processTurnMemoryCandidates(input: {
+    userId: string;
+    turn: TurnRecord;
+  }): Promise<TurnMemoryProcessingResult> {
+    if (input.turn.kind !== "human") {
+      return {
+        status: "ignored",
+        candidates: [],
+        userMemory: [],
+        dailyEvents: [],
+      };
+    }
+    const candidates = await classifyTurnMemoryCandidates(this.llm, input.turn);
+    const userMemory: UserMemoryWriteResult[] = [];
+    const dailyEvents: Array<{
+      action: "created" | "kept";
+      event: DailyEvent;
+    }> = [];
+    for (const candidate of candidates) {
+      if (candidate.kind === "user_memory") {
+        userMemory.push(
+          await this.executeUserMemoryWrite(input.userId, candidate.note),
+        );
+        continue;
+      }
+      const existing = await this.repository.searchDailyEvents({
+        userId: input.userId,
+        query: candidate.summary,
+        from: candidate.eventDate,
+        to: candidate.eventDate,
+        limit: 20,
+      });
+      const duplicate = existing.find(
+        (event) =>
+          event.eventDate === candidate.eventDate &&
+          normalizeMemoryText(event.summary) ===
+            normalizeMemoryText(candidate.summary),
+      );
+      if (duplicate) {
+        dailyEvents.push({ action: "kept", event: duplicate });
+        continue;
+      }
+      dailyEvents.push({
+        action: "created",
+        event: await this.repository.rememberDailyEvent({
+          userId: input.userId,
+          eventDate: candidate.eventDate,
+          summary: candidate.summary,
+        }),
+      });
+    }
+    return { status: "processed", candidates, userMemory, dailyEvents };
+  }
+
   async rememberUserNote(input: {
     userId: string;
     note: string;
@@ -575,12 +644,13 @@ class DefaultMemorySystemService implements MemorySystemService {
     proposedNote: string,
     explicitTargetNoteId?: number,
   ): Promise<UserMemoryWriteResult> {
-    const [partialMatches, recentNotes] = await Promise.all([
+    const [partialMatches, recentNotes, semanticMatches] = await Promise.all([
       this.repository.searchUserNotes(userId, proposedNote.trim(), 12),
       this.repository.searchUserNotes(userId, "", 24),
+      this.findSemanticUserNotes(userId, proposedNote, 12),
     ]);
     const candidates = mergeUserNoteCandidates(
-      partialMatches,
+      [...semanticMatches, ...partialMatches],
       recentNotes,
       explicitTargetNoteId,
     );
@@ -647,6 +717,28 @@ class DefaultMemorySystemService implements MemorySystemService {
       reason: decision.reason,
       deletedNoteId: target.id,
     };
+  }
+
+  private async findSemanticUserNotes(
+    userId: string,
+    query: string,
+    limit: number,
+  ): Promise<UserNote[]> {
+    if (!this.embedText) return [];
+    try {
+      const [embedding, candidates] = await Promise.all([
+        this.embedText(query),
+        this.repository.fetchUserMemorySearchCandidates(
+          userId,
+          Math.max(limit * 10, 100),
+        ),
+      ]);
+      return rankUserMemory(query, requireEmbedding(embedding), candidates)
+        .slice(0, limit)
+        .map(({ id, note, createdAt }) => ({ id, note, createdAt }));
+    } catch {
+      return [];
+    }
   }
 
   private async indexUserNote(userId: string, note: UserNote): Promise<void> {
@@ -849,6 +941,9 @@ const formatCatalogTopic = (value: string): string => {
 
 const latestIso = (values: string[]): string | undefined =>
   values.filter(Boolean).sort().at(-1);
+
+const normalizeMemoryText = (value: string): string =>
+  value.replace(/\s+/g, " ").trim().toLocaleLowerCase();
 
 export const createMemorySystemService = (
   options: MemorySystemOptions,
