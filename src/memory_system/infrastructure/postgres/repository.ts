@@ -1,4 +1,16 @@
-import { and, desc, eq, ilike, inArray, isNull, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  ilike,
+  inArray,
+  isNull,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 import { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import {
@@ -9,6 +21,12 @@ import {
 } from "../../domain/types";
 import { ensureTurnRecordId } from "../../domain/identifiers";
 import { UserNote } from "../../domain/userMemory";
+import {
+  DailyEvent,
+  GetDailyEventsByDateInput,
+  RememberDailyEventInput,
+  SearchDailyEventsInput,
+} from "../../domain/dailyEvent";
 import { createDrizzleClient } from "./drizzleClient";
 import {
   memoryConversationChunksTable,
@@ -16,6 +34,7 @@ import {
   memoryPolicyCardsTable,
   memoryTurnRecordsTable,
   userNotesTable,
+  dailyEventsTable,
 } from "./schema";
 
 export class MemoryRepository {
@@ -120,6 +139,77 @@ export class MemoryRepository {
       )
       .returning({ id: userNotesTable.id });
     return rows.length > 0;
+  }
+
+  async rememberDailyEvent(input: RememberDailyEventInput): Promise<DailyEvent> {
+    const [row] = await this.db
+      .insert(dailyEventsTable)
+      .values({
+        userId: input.userId,
+        eventDate: normalizeDateInput(input.eventDate),
+        summary: input.summary,
+        tags: input.tags ?? [],
+        ...(input.sourceMessage ? { sourceMessage: input.sourceMessage } : {}),
+      })
+      .returning();
+    if (!row) {
+      throw new Error("failed to persist daily event");
+    }
+    return mapDailyEventRow(row);
+  }
+
+  async searchDailyEvents(input: SearchDailyEventsInput): Promise<DailyEvent[]> {
+    const query = input.query.trim();
+    const content = sql`concat_ws(' ', ${dailyEventsTable.summary}, ${dailyEventsTable.sourceMessage}, array_to_string(${dailyEventsTable.tags}, ' '))`;
+    const conditions = [
+      eq(dailyEventsTable.userId, input.userId),
+      ...(query
+        ? [
+            or(
+              sql`to_tsvector('simple', ${content}) @@ websearch_to_tsquery('simple', ${query})`,
+              sql`${content} ILIKE ${`%${escapeLike(query)}%`} ESCAPE '\\'`,
+            ),
+          ]
+        : []),
+      ...(input.from
+        ? [gte(dailyEventsTable.eventDate, normalizeDateInput(input.from))]
+        : []),
+      ...(input.to
+        ? [lte(dailyEventsTable.eventDate, normalizeDateInput(input.to))]
+        : []),
+    ];
+    const rows = await this.db
+      .select()
+      .from(dailyEventsTable)
+      .where(and(...conditions))
+      .orderBy(
+        desc(dailyEventsTable.eventDate),
+        desc(dailyEventsTable.createdAt),
+      )
+      .limit(input.limit ?? 10);
+    return rows.map(mapDailyEventRow);
+  }
+
+  async getDailyEventsByDate(
+    input: GetDailyEventsByDateInput,
+  ): Promise<DailyEvent[]> {
+    const windowDays = input.windowDays ?? 3;
+    const center = parseDateOnly(normalizeDateInput(input.date));
+    const from = formatDateOnly(addDays(center, -windowDays));
+    const to = formatDateOnly(addDays(center, windowDays));
+    const rows = await this.db
+      .select()
+      .from(dailyEventsTable)
+      .where(
+        and(
+          eq(dailyEventsTable.userId, input.userId),
+          gte(dailyEventsTable.eventDate, from),
+          lte(dailyEventsTable.eventDate, to),
+        ),
+      )
+      .orderBy(asc(dailyEventsTable.eventDate), asc(dailyEventsTable.createdAt))
+      .limit(input.limit ?? 20);
+    return rows.map(mapDailyEventRow);
   }
 
   async fetchTurnRecordsForThread(
@@ -476,8 +566,6 @@ const mapPolicyCardRow = (
 const normalizeNote = (value: string): string =>
   value.trim().toLocaleLowerCase().replace(/[\s。、,.!！?？]+/gu, " ").trim();
 
-const escapeLike = (value: string): string => value.replace(/[%_\\]/g, "\\$&");
-
 const mapUserNote = (
   row: typeof userNotesTable.$inferSelect,
 ): UserNote => ({
@@ -485,3 +573,33 @@ const mapUserNote = (
   note: row.note,
   createdAt: new Date(row.createdAt),
 });
+
+const mapDailyEventRow = (
+  row: typeof dailyEventsTable.$inferSelect,
+): DailyEvent => ({
+  id: row.id,
+  userId: row.userId,
+  eventDate: row.eventDate,
+  summary: row.summary,
+  tags: row.tags,
+  ...(row.sourceMessage ? { sourceMessage: row.sourceMessage } : {}),
+  createdAt: new Date(row.createdAt),
+});
+
+const normalizeDateInput = (value: string): string => {
+  if (/^\d{8}$/.test(value)) {
+    return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  throw new Error(`invalid date format: ${value}`);
+};
+
+const escapeLike = (value: string): string => value.replace(/[%_\\]/g, "\\$&");
+const parseDateOnly = (value: string): Date =>
+  new Date(`${value}T00:00:00.000Z`);
+const addDays = (date: Date, delta: number): Date => {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + delta);
+  return next;
+};
+const formatDateOnly = (date: Date): string => date.toISOString().slice(0, 10);

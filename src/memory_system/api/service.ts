@@ -26,6 +26,12 @@ import {
   UserNote,
   decideUserMemoryWrite,
 } from "../domain/userMemory";
+import {
+  DailyEvent,
+  GetDailyEventsByDateInput,
+  RememberDailyEventInput,
+  SearchDailyEventsInput,
+} from "../domain/dailyEvent";
 import { join } from "node:path";
 
 export interface MemorySystemOptions {
@@ -91,6 +97,9 @@ export interface MemorySystemService {
     note: string;
   }): Promise<UserMemoryWriteResult>;
   deleteUserNote(input: { userId: string; noteId: number }): Promise<boolean>;
+  rememberDailyEvent(input: RememberDailyEventInput): Promise<DailyEvent>;
+  searchDailyEvents(input: SearchDailyEventsInput): Promise<DailyEvent[]>;
+  getDailyEventsByDate(input: GetDailyEventsByDateInput): Promise<DailyEvent[]>;
 }
 
 class DefaultMemorySystemService implements MemorySystemService {
@@ -389,6 +398,20 @@ class DefaultMemorySystemService implements MemorySystemService {
       reason: decision.reason,
       deletedNoteId: target.id,
     };
+  }
+
+  async rememberDailyEvent(input: RememberDailyEventInput): Promise<DailyEvent> {
+    return this.repository.rememberDailyEvent(input);
+  }
+
+  async searchDailyEvents(input: SearchDailyEventsInput): Promise<DailyEvent[]> {
+    return this.repository.searchDailyEvents(input);
+  }
+
+  async getDailyEventsByDate(
+    input: GetDailyEventsByDateInput,
+  ): Promise<DailyEvent[]> {
+    return this.repository.getDailyEventsByDate(input);
   }
 }
 

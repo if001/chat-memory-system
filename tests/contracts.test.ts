@@ -43,6 +43,16 @@ test("public facade keeps caller scope while hiding storage details", async () =
     searchUserNotes: async () => [],
     replaceUserNote: async () => ({ ok: true }),
     deleteUserNote: async () => true,
+    rememberDailyEvent: async (input) => ({
+      id: 1,
+      userId: input.userId,
+      eventDate: input.eventDate,
+      summary: input.summary,
+      tags: input.tags ?? [],
+      createdAt: new Date(),
+    }),
+    searchDailyEvents: async () => [],
+    getDailyEventsByDate: async () => [],
   };
 
   const catalog = await facade.inspectCatalog({

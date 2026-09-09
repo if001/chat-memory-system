@@ -11,6 +11,7 @@ import {
   TurnRecord,
 } from "../src/memory_system/domain/types";
 import { UserNote } from "../src/memory_system/domain/userMemory";
+import { DailyEvent } from "../src/memory_system/domain/dailyEvent";
 
 type RepositoryStub = {
   saveTurnRecord(input: TurnRecord): Promise<void>;
@@ -39,6 +40,21 @@ type RepositoryStub = {
     note: string,
   ): Promise<UserNote | null>;
   deleteUserNote(userId: string, noteId: number): Promise<boolean>;
+  rememberDailyEvent(input: {
+    userId: string;
+    eventDate: string;
+    summary: string;
+  }): Promise<DailyEvent>;
+  searchDailyEvents(input: {
+    userId: string;
+    query: string;
+    from?: string;
+    to?: string;
+  }): Promise<DailyEvent[]>;
+  getDailyEventsByDate(input: {
+    userId: string;
+    date: string;
+  }): Promise<DailyEvent[]>;
 };
 
 type StubbedService = MemorySystemService & {
@@ -256,6 +272,37 @@ test("replaceUserNote removes the old correction target from subsequent searches
   );
 });
 
+test("DailyEvent service keeps user scope and structured date filters", async () => {
+  const calls: Array<{
+    userId: string;
+    query: string;
+    from?: string;
+    to?: string;
+  }> = [];
+  const service = createStubbedService({
+    searchDailyEvents: async (input) => {
+      calls.push(input);
+      return [];
+    },
+  });
+
+  await service.searchDailyEvents({
+    userId: "shared-user",
+    query: "queue tests",
+    from: "2026-09-01",
+    to: "2026-09-30",
+  });
+
+  assert.deepEqual(calls, [
+    {
+      userId: "shared-user",
+      query: "queue tests",
+      from: "2026-09-01",
+      to: "2026-09-30",
+    },
+  ]);
+});
+
 const createStubbedService = (
   repositoryOverrides: Partial<RepositoryStub>,
   responses: unknown[] = [],
@@ -297,6 +344,16 @@ const createStubbedService = (
     searchUserNotes: async () => [],
     replaceUserNote: async () => null,
     deleteUserNote: async () => false,
+    rememberDailyEvent: async (input) => ({
+      id: 1,
+      userId: input.userId,
+      eventDate: input.eventDate,
+      summary: input.summary,
+      tags: [],
+      createdAt: new Date("2026-09-09T00:00:00.000Z"),
+    }),
+    searchDailyEvents: async () => [],
+    getDailyEventsByDate: async () => [],
     ...repositoryOverrides,
   };
   return service;
