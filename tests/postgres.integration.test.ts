@@ -99,6 +99,67 @@ integrationTest(
 );
 
 integrationTest(
+  "turn search index enforces bot, thread, role, kind, and date filters",
+  async () => {
+    const suffix = Date.now();
+    const botId = `it-search-${suffix}`;
+    const repository = new MemoryRepository(postgresUrl as string);
+    try {
+      await cleanupBot(botId);
+      await repository.upsertTurnSearchIndex({
+        turnRecordId: "matching-turn",
+        botId,
+        threadId: "thread-1",
+        kind: "human",
+        roles: ["user", "assistant"],
+        occurredAtIso: "2026-01-15T00:00:00.000Z",
+        excerpt: "user: jazz records",
+        embedding: [1, 0],
+      });
+      await repository.upsertTurnSearchIndex({
+        turnRecordId: "wrong-kind",
+        botId,
+        threadId: "thread-1",
+        kind: "proactive",
+        roles: ["user", "assistant"],
+        occurredAtIso: "2026-01-15T00:00:00.000Z",
+        excerpt: "user: proactive jazz suggestion",
+        embedding: [1, 0],
+      });
+      await repository.upsertTurnSearchIndex({
+        turnRecordId: "outside-range",
+        botId,
+        threadId: "thread-1",
+        kind: "human",
+        roles: ["user"],
+        occurredAtIso: "2026-02-01T00:00:00.000Z",
+        excerpt: "user: jazz festival",
+        embedding: [1, 0],
+      });
+
+      const results = await repository.fetchTurnSearchCandidates(
+        {
+          botId,
+          threadId: "thread-1",
+          query: "music",
+          from: "2026-01-01",
+          to: "2026-01-31",
+          roles: ["assistant"],
+          kinds: ["human"],
+        },
+        10,
+      );
+      assert.deepEqual(results.map((item) => item.turnRecordId), [
+        "matching-turn",
+      ]);
+    } finally {
+      await cleanupBot(botId);
+      await repository.close();
+    }
+  },
+);
+
+integrationTest(
   "repository persists episodes and policy cards with the new schema",
   async () => {
     const botId = `it-repo-${Date.now()}`;
@@ -358,6 +419,10 @@ const buildTurnRecord = (botId: string, threadId: string): TurnRecord => ({
 const cleanupBot = async (botId: string): Promise<void> => {
   const pool = new Pool({ connectionString: postgresUrl });
   try {
+    await pool.query(
+      "DELETE FROM app.memory_turn_search_index WHERE bot_id = $1",
+      [botId],
+    );
     await pool.query("DELETE FROM app.memory_policy_cards WHERE bot_id = $1", [
       botId,
     ]);

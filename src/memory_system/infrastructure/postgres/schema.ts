@@ -1,5 +1,6 @@
 import {
   bigserial,
+  index,
   integer,
   jsonb,
   pgSchema,
@@ -57,6 +58,30 @@ export const memoryTurnRecordsTable = appSchema.table("memory_turn_records", {
   messagesJson: jsonb("messages_json").$type<TurnRecord["messages"]>().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
 });
+
+export const memoryTurnSearchIndexTable = appSchema.table(
+  "memory_turn_search_index",
+  {
+    turnRecordId: text("turn_record_id").primaryKey(),
+    botId: text("bot_id").notNull(),
+    threadId: text("thread_id").notNull(),
+    kind: text("kind").$type<TurnRecord["kind"]>().notNull(),
+    roles: text("roles").array().notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    excerpt: text("excerpt").notNull(),
+    embeddingJson: jsonb("embedding_json").$type<number[]>().notNull(),
+    indexedAt: timestamp("indexed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("memory_turn_search_scope_idx").on(
+      table.botId,
+      table.threadId,
+      table.occurredAt,
+    ),
+  ],
+);
 
 export const memoryConversationChunksTable = appSchema.table(
   "memory_conversation_chunks",
