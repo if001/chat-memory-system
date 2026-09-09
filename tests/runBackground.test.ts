@@ -8,6 +8,7 @@ test("buildMemoryBackgroundRunnerFromEnv wires service and runner config", () =>
   const built = buildMemoryBackgroundRunnerFromEnv(
     {
       BOT_ID: "ao",
+      MEMORY_BACKGROUND_USER_ID: "user-1",
       POSTGRES_URL: "postgres://example",
       OLLAMA_BASE_URL: "http://ollama.local",
       OLLAMA_CHAT_MODEL: "qwen3",
@@ -20,6 +21,9 @@ test("buildMemoryBackgroundRunnerFromEnv wires service and runner config", () =>
       MEMORY_BACKGROUND_TURN_LIMIT_PER_THREAD: "90",
       MEMORY_BACKGROUND_EPISODE_LIMIT: "11",
       MEMORY_BACKGROUND_POLICY_LIMIT: "8",
+      MEMORY_CANDIDATE_BATCH_LIMIT: "9",
+      MEMORY_CANDIDATE_CONCURRENCY: "3",
+      MEMORY_CANDIDATE_LEASE_MS: "45000",
       MEMORY_LLM_CACHE_DIR: "/tmp/memory-cache",
       MEMORY_LLM_CACHE_TTL_MS: "60000",
       MEMORY_CHUNK_SIZE_TURNS: "5",
@@ -40,6 +44,7 @@ test("buildMemoryBackgroundRunnerFromEnv wires service and runner config", () =>
   );
 
   assert.equal(built.meta.pollMs, 7000);
+  assert.equal(built.meta.userId, "user-1");
   assert.deepEqual(serviceInput, {
     postgresUrl: "postgres://example",
     ollamaBaseUrl: "http://ollama.local",
@@ -59,11 +64,15 @@ test("buildMemoryBackgroundRunnerFromEnv wires service and runner config", () =>
     service: {} as never,
     config: {
       botId: "ao",
+      userId: "user-1",
       pollMs: 7000,
       threadLimit: 12,
       turnLimitPerThread: 90,
       episodeLimit: 11,
       policyLimit: 8,
+      memoryCandidateBatchLimit: 9,
+      memoryCandidateConcurrency: 3,
+      memoryCandidateLeaseMs: 45000,
     },
   });
 });
@@ -73,6 +82,7 @@ test("buildMemoryBackgroundRunnerFromEnv throws on missing required env", () => 
     () =>
       buildMemoryBackgroundRunnerFromEnv({
         BOT_ID: "ao",
+        MEMORY_BACKGROUND_USER_ID: "user-1",
         POSTGRES_URL: "postgres://example",
         OLLAMA_BASE_URL: "http://ollama.local",
         OLLAMA_API_KEY: "secret",
@@ -86,6 +96,7 @@ test("buildMemoryBackgroundRunnerFromEnv throws on invalid numeric env", () => {
     () =>
       buildMemoryBackgroundRunnerFromEnv({
         BOT_ID: "ao",
+        MEMORY_BACKGROUND_USER_ID: "user-1",
         POSTGRES_URL: "postgres://example",
         OLLAMA_BASE_URL: "http://ollama.local",
         OLLAMA_CHAT_MODEL: "qwen3",
