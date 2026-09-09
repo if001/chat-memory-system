@@ -293,6 +293,21 @@ export class MemoryRepository {
     return rows.map(mapDailyEventRow);
   }
 
+  async getDailyEventDateRange(
+    userId: string,
+  ): Promise<{ from?: string; to?: string } | undefined> {
+    const rows = await this.db
+      .select({
+        from: sql<string | null>`min(${dailyEventsTable.eventDate})`,
+        to: sql<string | null>`max(${dailyEventsTable.eventDate})`,
+      })
+      .from(dailyEventsTable)
+      .where(eq(dailyEventsTable.userId, userId));
+    const row = rows[0];
+    if (!row?.from || !row.to) return undefined;
+    return { from: row.from, to: row.to };
+  }
+
   async upsertTurnSearchIndex(entry: TurnSearchIndexEntry): Promise<void> {
     const values = {
       turnRecordId: entry.turnRecordId,

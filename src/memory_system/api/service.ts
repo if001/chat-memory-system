@@ -25,6 +25,9 @@ import {
 } from "../infrastructure/ollama/fileCachedClient";
 import { MemoryRepository } from "../infrastructure/postgres/repository";
 import type {
+  MemoryCatalog,
+  MemoryCatalogEntry,
+  MemoryCatalogRequest,
   MemorySearchRequest,
   MemorySearchResult,
 } from "./contracts";
@@ -103,6 +106,7 @@ export interface MemorySystemService {
   ): Promise<PolicyCard[]>;
   queryApplicablePolicyCards(input: QueryPolicyInput): Promise<PolicyCard[]>;
   search(input: MemorySearchRequest): Promise<MemorySearchResult>;
+  inspectCatalog(input: MemoryCatalogRequest): Promise<MemoryCatalog>;
   rememberUserNote(input: {
     userId: string;
     note: string;
@@ -438,6 +442,77 @@ class DefaultMemorySystemService implements MemorySystemService {
     return result;
   }
 
+  async inspectCatalog(input: MemoryCatalogRequest): Promise<MemoryCatalog> {
+    const [conversationHistory, userMemory, dailyEvents, policyCards] =
+      await Promise.all([
+        catalogEntry(async () => {
+          const turns = await this.repository.fetchRecentTurnRecordsForThread(
+            input.botId,
+            input.threadId,
+            CATALOG_SOURCE_LIMIT,
+          );
+          return {
+            topics: turns.flatMap((turn) =>
+              turn.messages
+                .filter((message) => message.role !== "system")
+                .map((message) => message.content),
+            ),
+            updatedAt: latestIso(turns.map((turn) => turn.createdAtIso)),
+          };
+        }),
+        catalogEntry(async () => {
+          const notes = await this.repository.searchUserNotes(
+            input.userId,
+            "",
+            CATALOG_SOURCE_LIMIT,
+          );
+          return {
+            topics: notes.map((note) => note.note),
+            updatedAt: latestIso(
+              notes.map((note) => note.createdAt.toISOString()),
+            ),
+          };
+        }),
+        catalogEntry(async () => {
+          const [events, dateRange] = await Promise.all([
+            this.repository.searchDailyEvents({
+              userId: input.userId,
+              query: "",
+              limit: CATALOG_SOURCE_LIMIT,
+            }),
+            this.repository.getDailyEventDateRange(input.userId),
+          ]);
+          return {
+            topics: events.map((event) => event.summary),
+            updatedAt: latestIso(
+              events.map((event) => event.createdAt.toISOString()),
+            ),
+            dateRange,
+          };
+        }),
+        catalogEntry(async () => {
+          const cards = await this.repository.fetchPolicyCards(
+            input.botId,
+            CATALOG_SOURCE_LIMIT,
+          );
+          return {
+            topics: cards.map((card) => card.appliesWhen),
+            updatedAt: latestIso(cards.map((card) => card.lastUpdatedIso)),
+          };
+        }),
+      ]);
+    const entries = [conversationHistory, userMemory, dailyEvents, policyCards];
+    return {
+      status: entries.every((entry) => entry.status === "unavailable")
+        ? "unavailable"
+        : "available",
+      conversationHistory,
+      userMemory,
+      dailyEvents,
+      policyCards,
+    };
+  }
+
   async rememberUserNote(input: {
     userId: string;
     note: string;
@@ -730,6 +805,50 @@ const requireEmbedding = (embedding: number[]): number[] => {
   }
   return embedding;
 };
+
+const CATALOG_SOURCE_LIMIT = 100;
+const CATALOG_TOPIC_LIMIT = 5;
+const CATALOG_TOPIC_MAX_LENGTH = 80;
+
+const catalogEntry = async (load: () => Promise<{
+  topics: string[];
+  updatedAt?: string;
+  dateRange?: { from?: string; to?: string };
+}>): Promise<MemoryCatalogEntry> => {
+  try {
+    const loaded = await load();
+    const topics = [
+      ...new Set(loaded.topics.map(formatCatalogTopic).filter(Boolean)),
+    ].slice(0, CATALOG_TOPIC_LIMIT);
+    if (topics.length === 0) {
+      return { status: "empty", available: false, topics: [] };
+    }
+    return {
+      status: "available",
+      available: true,
+      topics,
+      ...(loaded.updatedAt ? { updatedAt: loaded.updatedAt } : {}),
+      ...(loaded.dateRange ? { dateRange: loaded.dateRange } : {}),
+    };
+  } catch (error) {
+    return {
+      status: "unavailable",
+      available: false,
+      topics: [],
+      reason: error instanceof Error ? error.message : "Catalog backend failed",
+    };
+  }
+};
+
+const formatCatalogTopic = (value: string): string => {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length <= CATALOG_TOPIC_MAX_LENGTH
+    ? normalized
+    : `${normalized.slice(0, CATALOG_TOPIC_MAX_LENGTH - 1)}…`;
+};
+
+const latestIso = (values: string[]): string | undefined =>
+  values.filter(Boolean).sort().at(-1);
 
 export const createMemorySystemService = (
   options: MemorySystemOptions,

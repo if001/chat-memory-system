@@ -65,6 +65,9 @@ type RepositoryStub = {
     userId: string;
     date: string;
   }): Promise<DailyEvent[]>;
+  getDailyEventDateRange(
+    userId: string,
+  ): Promise<{ from?: string; to?: string } | undefined>;
   upsertTurnSearchIndex(entry: TurnSearchIndexEntry): Promise<void>;
   fetchTurnSearchCandidates(
     input: TurnRecordSearchRequest,
@@ -655,6 +658,57 @@ test("backfillTurnSearchIndex is idempotent after indexing canonical turns", asy
   assert.match(indexed[0]?.excerpt ?? "", /user:/);
 });
 
+test("inspectCatalog returns bounded topic hints and daily event range", async () => {
+  const service = createStubbedService({
+    fetchRecentTurnRecordsForThread: async () => [{
+      botId: "ao", threadId: "thread-1", kind: "human",
+      messages: [{ role: "user", content: `  ${"music ".repeat(20)}  `, timestampIso: "2026-09-08T00:00:00.000Z" }],
+      createdAtIso: "2026-09-08T00:00:00.000Z",
+    }],
+    searchUserNotes: async () => Array.from({ length: 8 }, (_, index) => ({
+      id: index + 1,
+      note: `preference ${index + 1}`,
+      createdAt: new Date(`2026-09-0${Math.min(index + 1, 9)}T00:00:00.000Z`),
+    })),
+    searchDailyEvents: async () => [{
+      id: 1, userId: "user-1", eventDate: "2026-09-09",
+      summary: "visited the jazz festival", tags: [],
+      createdAt: new Date("2026-09-09T01:00:00.000Z"),
+    }],
+    getDailyEventDateRange: async () => ({ from: "2026-08-01", to: "2026-09-09" }),
+    fetchPolicyCards: async () => [card("pc-1", ["episode-1"])],
+  });
+
+  const request = { botId: "ao", threadId: "thread-1", userId: "user-1" };
+  const catalog = await service.inspectCatalog(request);
+
+  assert.equal(catalog.status, "available");
+  assert.equal(catalog.conversationHistory.topics[0]?.length, 80);
+  assert.equal(catalog.userMemory.topics.length, 5);
+  assert.deepEqual(catalog.dailyEvents.dateRange, { from: "2026-08-01", to: "2026-09-09" });
+  assert.equal(catalog.policyCards.topics[0], "User needs rollout guidance.");
+  assert.deepEqual(await service.inspectCatalog(request), catalog);
+});
+
+test("inspectCatalog isolates unavailable and empty memory areas", async () => {
+  const service = createStubbedService({
+    fetchRecentTurnRecordsForThread: async () => { throw new Error("turn store offline"); },
+    searchUserNotes: async () => [],
+    searchDailyEvents: async () => [],
+    getDailyEventDateRange: async () => undefined,
+    fetchPolicyCards: async () => { throw new Error("policy store offline"); },
+  });
+
+  const catalog = await service.inspectCatalog({ botId: "ao", threadId: "thread-1", userId: "user-1" });
+
+  assert.deepEqual(catalog.conversationHistory, {
+    status: "unavailable", available: false, topics: [], reason: "turn store offline",
+  });
+  assert.deepEqual(catalog.userMemory, { status: "empty", available: false, topics: [] });
+  assert.equal(catalog.dailyEvents.status, "empty");
+  assert.equal(catalog.policyCards.status, "unavailable");
+});
+
 const createStubbedService = (
   repositoryOverrides: Partial<RepositoryStub>,
   responses: unknown[] = [],
@@ -712,6 +766,7 @@ const createStubbedService = (
     }),
     searchDailyEvents: async () => [],
     getDailyEventsByDate: async () => [],
+    getDailyEventDateRange: async () => undefined,
     upsertTurnSearchIndex: async () => {},
     fetchTurnSearchCandidates: async () => [],
     fetchUnindexedTurnRecords: async () => [],
