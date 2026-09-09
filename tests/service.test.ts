@@ -178,6 +178,44 @@ test("queryApplicablePolicyCards filters model-selected cards and ignores cards 
   assert.deepEqual(result, [evidenced]);
 });
 
+test("unified policy search keeps bot scope, caps results, and returns minimal payload", async () => {
+  const fetchedBotIds: string[] = [];
+  const cards = [1, 2, 3, 4].map((index) => ({
+    ...card(`pc-${index}`, [`ep-${index}`]),
+    botId: "ao",
+    createdAtIso: `2026-07-1${index}T00:00:00.000Z`,
+    lastUpdatedIso: `2026-07-1${index}T00:00:00.000Z`,
+  }));
+  const service = createStubbedService(
+    {
+      fetchPolicyCards: async (botId) => {
+        fetchedBotIds.push(botId);
+        return cards;
+      },
+    },
+    [cards.map((item) => item.id)],
+  );
+
+  const result = await service.search({
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "shared-user",
+    query: "Need rollout guidance",
+    scopes: ["policy_cards"],
+    limits: { policy_cards: 10 },
+  });
+
+  assert.deepEqual(fetchedBotIds, ["ao"]);
+  assert.equal(result.policyCards?.status, "found");
+  if (result.policyCards?.status !== "found") return;
+  assert.equal(result.policyCards.data.length, 3);
+  assert.deepEqual(Object.keys(result.policyCards.data[0] ?? {}).sort(), [
+    "appliesWhen",
+    "policyCardId",
+    "recommendedBehavior",
+  ]);
+});
+
 test("rememberUserNote keeps a semantic duplicate without inserting it", async () => {
   const existing: UserNote = {
     id: 1,
