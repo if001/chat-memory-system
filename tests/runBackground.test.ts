@@ -106,3 +106,26 @@ test("buildMemoryBackgroundRunnerFromEnv throws on invalid numeric env", () => {
     /Invalid numeric environment variable: MEMORY_BACKGROUND_POLL_MS/,
   );
 });
+
+test("buildMemoryBackgroundRunnerFromEnv reuses the simple-pomdp user scope", () => {
+  const built = buildMemoryBackgroundRunnerFromEnv(
+    {
+      BOT_ID: "ao",
+      SIMPLE_POMDP_USER_ID: "shared-user",
+      POSTGRES_URL: "postgres://example",
+      OLLAMA_BASE_URL: "http://ollama.local",
+      OLLAMA_CHAT_MODEL: "qwen3",
+      OLLAMA_API_KEY: "secret",
+    },
+    {
+      createMemorySystemService: (() => ({})) as never,
+      createMemoryBackgroundRunner: (() => ({
+        start() {},
+        stop() {},
+        runOnce: async () => {},
+      })) as never,
+    },
+  );
+
+  assert.equal(built.meta.userId, "shared-user");
+});
