@@ -1,5 +1,6 @@
 import type { PolicyCard, TurnRecord } from "../domain/types";
 import type { QueryPolicyInput } from "./service";
+import type { UserMemoryWriteResult, UserNote } from "../domain/userMemory";
 
 export const memoryScopes = [
   "conversation_history",
@@ -95,6 +96,21 @@ export interface MemoryClientFacade {
   inspectCatalog(input: MemoryCatalogRequest): Promise<MemoryCatalog>;
   search(input: MemorySearchRequest): Promise<MemorySearchResult>;
   queryApplicablePolicyCards(input: QueryPolicyInput): Promise<PolicyCard[]>;
+  rememberUserNote(input: {
+    userId: string;
+    note: string;
+  }): Promise<UserMemoryWriteResult>;
+  searchUserNotes(input: {
+    userId: string;
+    query: string;
+    limit?: number;
+  }): Promise<UserNote[]>;
+  replaceUserNote(input: {
+    userId: string;
+    noteId: number;
+    note: string;
+  }): Promise<UserMemoryWriteResult>;
+  deleteUserNote(input: { userId: string; noteId: number }): Promise<boolean>;
 }
 
 const memoryScopeSet: ReadonlySet<string> = new Set(memoryScopes);
