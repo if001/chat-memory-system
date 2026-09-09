@@ -21,6 +21,11 @@ import {
   JsonGeneratingClient,
 } from "../infrastructure/ollama/fileCachedClient";
 import { MemoryRepository } from "../infrastructure/postgres/repository";
+import type {
+  MemorySearchRequest,
+  MemorySearchResult,
+} from "./contracts";
+import { validateMemorySearchRequest } from "./contracts";
 import {
   UserMemoryWriteResult,
   UserNote,
@@ -82,6 +87,7 @@ export interface MemorySystemService {
     limit?: number,
   ): Promise<PolicyCard[]>;
   queryApplicablePolicyCards(input: QueryPolicyInput): Promise<PolicyCard[]>;
+  search(input: MemorySearchRequest): Promise<MemorySearchResult>;
   rememberUserNote(input: {
     userId: string;
     note: string;
@@ -290,6 +296,47 @@ class DefaultMemorySystemService implements MemorySystemService {
       await this.repository.fetchPolicyCards(input.botId, input.limit ?? 10)
     ).filter((card) => card.episodeIds.length > 0);
     return filterApplicablePolicyCards(this.llm, queryContext, candidates);
+  }
+
+  async search(input: MemorySearchRequest): Promise<MemorySearchResult> {
+    const request = validateMemorySearchRequest(input);
+    const result: MemorySearchResult = {};
+    for (const scope of request.scopes) {
+      if (scope !== "policy_cards") {
+        const unavailable = {
+          status: "unavailable",
+          reason: `${scope} search is not implemented`,
+        } as const;
+        if (scope === "conversation_history") {
+          result.conversationHistory = unavailable;
+        } else if (scope === "user_memory") {
+          result.userMemory = unavailable;
+        } else {
+          result.dailyEvents = unavailable;
+        }
+        continue;
+      }
+      const cards = await this.queryApplicablePolicyCards({
+        botId: request.botId,
+        threadId: request.threadId,
+        currentContext: request.query,
+        limit: Math.min(request.limits?.policy_cards ?? 3, 3),
+      });
+      result.policyCards = cards.length
+        ? {
+            status: "found",
+            data: cards.slice(0, 3).map((card) => ({
+              policyCardId: card.id,
+              appliesWhen: card.appliesWhen,
+              recommendedBehavior: card.recommendedBehavior,
+              ...(card.avoidBehavior
+                ? { avoidBehavior: card.avoidBehavior }
+                : {}),
+            })),
+          }
+        : { status: "not_found" };
+    }
+    return result;
   }
 
   async rememberUserNote(input: {
