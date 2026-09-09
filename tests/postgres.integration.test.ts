@@ -56,6 +56,64 @@ integrationTest(
 );
 
 integrationTest(
+  "UserMemory search index keeps user scope and exposes unindexed notes for backfill",
+  async () => {
+    const userId = `it-user-memory-index-${Date.now()}`;
+    const otherUserId = `${userId}-other`;
+    const repository = new MemoryRepository(postgresUrl as string);
+    try {
+      await cleanupUser(userId);
+      await cleanupUser(otherUserId);
+      const indexed = await repository.rememberUserNote(
+        userId,
+        "I enjoy jazz",
+      );
+      const pending = await repository.rememberUserNote(userId, "I prefer tea");
+      const other = await repository.rememberUserNote(
+        otherUserId,
+        "I enjoy jazz",
+      );
+      await repository.upsertUserMemorySearchIndex({
+        noteId: indexed.id,
+        userId,
+        note: indexed.note,
+        embedding: [1, 0],
+      });
+      await repository.upsertUserMemorySearchIndex({
+        noteId: other.id,
+        userId: otherUserId,
+        note: other.note,
+        embedding: [1, 0],
+      });
+
+      assert.deepEqual(
+        (await repository.fetchUserMemorySearchCandidates(userId, 10)).map(
+          (entry) => entry.noteId,
+        ),
+        [indexed.id],
+      );
+      assert.deepEqual(
+        (await repository.fetchUnindexedUserNotes(userId, 10)).map(
+          (note) => note.id,
+        ),
+        [pending.id],
+      );
+      await repository.deleteUserMemorySearchIndex(indexed.id);
+      assert.deepEqual(
+        (await repository.fetchUnindexedUserNotes(userId, 10)).map(
+          (note) => note.id,
+        ),
+        [indexed.id, pending.id],
+      );
+    } finally {
+      await cleanupUser(userId);
+      await cleanupUser(otherUserId);
+      await repository.close();
+    }
+  },
+);
+
+integrationTest(
   "DailyEvent search combines inclusive date boundaries with full-text content",
   async () => {
     const userId = `it-daily-event-${Date.now()}`;
@@ -444,6 +502,10 @@ const cleanupBot = async (botId: string): Promise<void> => {
 const cleanupUser = async (userId: string): Promise<void> => {
   const pool = new Pool({ connectionString: postgresUrl });
   try {
+    await pool.query(
+      "DELETE FROM app.memory_user_note_search_index WHERE user_id = $1",
+      [userId],
+    );
     await pool.query("DELETE FROM user_notes WHERE user_id = $1", [userId]);
   } finally {
     await pool.end();
