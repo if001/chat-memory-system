@@ -37,6 +37,16 @@ import {
   RememberDailyEventInput,
   SearchDailyEventsInput,
 } from "../domain/dailyEvent";
+import type {
+  TurnRecordSearchItem,
+  TurnRecordSearchRequest,
+} from "./contracts";
+import { ensureTurnRecordId } from "../domain/identifiers";
+import {
+  buildTurnExcerpt,
+  buildTurnSearchText,
+  cosineSimilarity,
+} from "../application/usecases/turnSearchIndex";
 import { join } from "node:path";
 
 export interface MemorySystemOptions {
@@ -106,6 +116,10 @@ export interface MemorySystemService {
   rememberDailyEvent(input: RememberDailyEventInput): Promise<DailyEvent>;
   searchDailyEvents(input: SearchDailyEventsInput): Promise<DailyEvent[]>;
   getDailyEventsByDate(input: GetDailyEventsByDateInput): Promise<DailyEvent[]>;
+  searchRelatedTurns(
+    input: TurnRecordSearchRequest,
+  ): Promise<TurnRecordSearchItem[]>;
+  backfillTurnSearchIndex(botId: string, limit?: number): Promise<number>;
 }
 
 class DefaultMemorySystemService implements MemorySystemService {
@@ -152,6 +166,13 @@ class DefaultMemorySystemService implements MemorySystemService {
 
   async ingestTurnRecord(input: TurnRecord): Promise<void> {
     await this.repository.saveTurnRecord(input);
+    if (this.embedText) {
+      try {
+        await this.indexTurnRecord(input);
+      } catch {
+        // The canonical TurnRecord remains available for a later backfill.
+      }
+    }
   }
 
   async getRecentConversationContext(input: {
@@ -302,14 +323,48 @@ class DefaultMemorySystemService implements MemorySystemService {
     const request = validateMemorySearchRequest(input);
     const result: MemorySearchResult = {};
     for (const scope of request.scopes) {
+      if (scope === "conversation_history") {
+        if (!this.embedText) {
+          result.conversationHistory = {
+            status: "unavailable",
+            reason: "TurnRecord embedding provider is not configured",
+          };
+          continue;
+        }
+        try {
+          const turns = await this.searchRelatedTurns({
+            botId: request.botId,
+            threadId: request.threadId,
+            query: request.query,
+            limit: request.limits?.conversation_history ?? 10,
+          });
+          result.conversationHistory = turns.length
+            ? {
+                status: "found",
+                data: turns.map(({ turnRecordId, occurredAt, excerpt }) => ({
+                  turnRecordId,
+                  occurredAt,
+                  excerpt,
+                })),
+              }
+            : { status: "not_found" };
+        } catch (error) {
+          result.conversationHistory = {
+            status: "unavailable",
+            reason:
+              error instanceof Error
+                ? error.message
+                : "TurnRecord search failed",
+          };
+        }
+        continue;
+      }
       if (scope !== "policy_cards") {
         const unavailable = {
           status: "unavailable",
           reason: `${scope} search is not implemented`,
         } as const;
-        if (scope === "conversation_history") {
-          result.conversationHistory = unavailable;
-        } else if (scope === "user_memory") {
+        if (scope === "user_memory") {
           result.userMemory = unavailable;
         } else {
           result.dailyEvents = unavailable;
@@ -459,6 +514,70 @@ class DefaultMemorySystemService implements MemorySystemService {
     input: GetDailyEventsByDateInput,
   ): Promise<DailyEvent[]> {
     return this.repository.getDailyEventsByDate(input);
+  }
+
+  async searchRelatedTurns(
+    input: TurnRecordSearchRequest,
+  ): Promise<TurnRecordSearchItem[]> {
+    if (!this.embedText || input.query.trim().length === 0) return [];
+    const queryEmbedding = await this.embedText(input.query);
+    const candidates = await this.repository.fetchTurnSearchCandidates(
+      input,
+      Math.max(input.limit ?? 10, 100),
+    );
+    return candidates
+      .map((candidate) => ({
+        turnRecordId: candidate.turnRecordId,
+        occurredAt: candidate.occurredAtIso,
+        excerpt: candidate.excerpt,
+        score:
+          cosineSimilarity(queryEmbedding, candidate.embedding) *
+          (candidate.kind === "human" ? 1 : 0.85),
+      }))
+      .sort((left, right) => right.score - left.score)
+      .slice(0, input.limit ?? 10)
+      .map(({ turnRecordId, occurredAt, excerpt }) => ({
+        turnRecordId,
+        occurredAt,
+        excerpt,
+      }));
+  }
+
+  async backfillTurnSearchIndex(
+    botId: string,
+    limit: number = 100,
+  ): Promise<number> {
+    if (!this.embedText) return 0;
+    const records = await this.repository.fetchUnindexedTurnRecords(
+      botId,
+      limit,
+    );
+    let indexed = 0;
+    for (const record of records) {
+      try {
+        await this.indexTurnRecord(record);
+        indexed += 1;
+      } catch {
+        // Failed rows stay unindexed so the next backfill can retry them.
+      }
+    }
+    return indexed;
+  }
+
+  private async indexTurnRecord(input: TurnRecord): Promise<void> {
+    if (!this.embedText) return;
+    const record = ensureTurnRecordId(input);
+    const embedding = await this.embedText(buildTurnSearchText(record));
+    await this.repository.upsertTurnSearchIndex({
+      turnRecordId: record.id,
+      botId: record.botId,
+      threadId: record.threadId,
+      kind: record.kind,
+      roles: [...new Set(record.messages.map((message) => message.role))],
+      occurredAtIso: record.createdAtIso,
+      excerpt: buildTurnExcerpt(record),
+      embedding,
+    });
   }
 }
 

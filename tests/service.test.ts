@@ -12,6 +12,8 @@ import {
 } from "../src/memory_system/domain/types";
 import { UserNote } from "../src/memory_system/domain/userMemory";
 import { DailyEvent } from "../src/memory_system/domain/dailyEvent";
+import { TurnSearchIndexEntry } from "../src/memory_system/application/usecases/turnSearchIndex";
+import { TurnRecordSearchRequest } from "../src/memory_system/api/contracts";
 
 type RepositoryStub = {
   saveTurnRecord(input: TurnRecord): Promise<void>;
@@ -55,11 +57,18 @@ type RepositoryStub = {
     userId: string;
     date: string;
   }): Promise<DailyEvent[]>;
+  upsertTurnSearchIndex(entry: TurnSearchIndexEntry): Promise<void>;
+  fetchTurnSearchCandidates(
+    input: TurnRecordSearchRequest,
+    limit: number,
+  ): Promise<TurnSearchIndexEntry[]>;
+  fetchUnindexedTurnRecords(botId: string, limit: number): Promise<TurnRecord[]>;
 };
 
 type StubbedService = MemorySystemService & {
   llm: { generateJson<T>(): Promise<T> };
   repository: RepositoryStub;
+  embedText?: (text: string) => Promise<number[]>;
 };
 
 const episode = (id: string, action = `action-${id}`): EpisodeCase => ({
@@ -341,6 +350,134 @@ test("DailyEvent service keeps user scope and structured date filters", async ()
   ]);
 });
 
+test("searchRelatedTurns applies scope filters and ranks semantic candidates", async () => {
+  const requests: TurnRecordSearchRequest[] = [];
+  const service = createStubbedService({
+    fetchTurnSearchCandidates: async (input) => {
+      requests.push(input);
+      return [
+        {
+          turnRecordId: "old-music-turn",
+          botId: "ao",
+          threadId: "thread-1",
+          kind: "human",
+          roles: ["user", "assistant"],
+          occurredAtIso: "2026-01-15T00:00:00.000Z",
+          excerpt: "user: We talked about jazz records.",
+          embedding: [1, 0],
+        },
+        {
+          turnRecordId: "other-turn",
+          botId: "ao",
+          threadId: "thread-1",
+          kind: "human",
+          roles: ["user", "assistant"],
+          occurredAtIso: "2026-01-16T00:00:00.000Z",
+          excerpt: "user: Deployment notes.",
+          embedding: [0, 1],
+        },
+      ];
+    },
+  });
+  service.embedText = async () => [1, 0];
+
+  const result = await service.searchRelatedTurns({
+    botId: "ao",
+    threadId: "thread-1",
+    query: "What music did we discuss?",
+    from: "2026-01-01",
+    to: "2026-01-31",
+    roles: ["user"],
+    kinds: ["human"],
+    limit: 1,
+  });
+
+  assert.equal(result[0]?.turnRecordId, "old-music-turn");
+  assert.deepEqual(requests[0], {
+    botId: "ao",
+    threadId: "thread-1",
+    query: "What music did we discuss?",
+    from: "2026-01-01",
+    to: "2026-01-31",
+    roles: ["user"],
+    kinds: ["human"],
+    limit: 1,
+  });
+});
+
+test("unified conversation search returns minimal TurnRecord payload", async () => {
+  const service = createStubbedService({
+    fetchTurnSearchCandidates: async () => [
+      {
+        turnRecordId: "old-music-turn",
+        botId: "ao",
+        threadId: "thread-1",
+        kind: "human",
+        roles: ["user", "assistant"],
+        occurredAtIso: "2026-01-15T00:00:00.000Z",
+        excerpt: "user: We talked about jazz records.",
+        embedding: [1, 0],
+      },
+    ],
+  });
+  service.embedText = async () => [1, 0];
+
+  const result = await service.search({
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "shared-user",
+    query: "What music did we discuss?",
+    scopes: ["conversation_history"],
+  });
+
+  assert.deepEqual(result.conversationHistory, {
+    status: "found",
+    data: [
+      {
+        turnRecordId: "old-music-turn",
+        occurredAt: "2026-01-15T00:00:00.000Z",
+        excerpt: "user: We talked about jazz records.",
+      },
+    ],
+  });
+});
+
+test("backfillTurnSearchIndex is idempotent after indexing canonical turns", async () => {
+  const record: TurnRecord = {
+    botId: "ao",
+    threadId: "thread-1",
+    kind: "human",
+    createdAtIso: "2026-01-15T00:00:00.000Z",
+    messages: [
+      {
+        role: "user",
+        content: "Do you remember our jazz discussion?",
+        timestampIso: "2026-01-15T00:00:00.000Z",
+      },
+      {
+        role: "assistant",
+        content: "We compared several records.",
+        timestampIso: "2026-01-15T00:00:01.000Z",
+      },
+    ],
+  };
+  const indexed: TurnSearchIndexEntry[] = [];
+  let reads = 0;
+  const service = createStubbedService({
+    fetchUnindexedTurnRecords: async () => (reads++ === 0 ? [record] : []),
+    upsertTurnSearchIndex: async (entry) => {
+      indexed.push(entry);
+    },
+  });
+  service.embedText = async (text) => [text.includes("kind: human") ? 1 : 0];
+
+  assert.equal(await service.backfillTurnSearchIndex("ao"), 1);
+  assert.equal(await service.backfillTurnSearchIndex("ao"), 0);
+  assert.equal(indexed.length, 1);
+  assert.deepEqual(indexed[0]?.roles, ["user", "assistant"]);
+  assert.match(indexed[0]?.excerpt ?? "", /user:/);
+});
+
 const createStubbedService = (
   repositoryOverrides: Partial<RepositoryStub>,
   responses: unknown[] = [],
@@ -392,6 +529,9 @@ const createStubbedService = (
     }),
     searchDailyEvents: async () => [],
     getDailyEventsByDate: async () => [],
+    upsertTurnSearchIndex: async () => {},
+    fetchTurnSearchCandidates: async () => [],
+    fetchUnindexedTurnRecords: async () => [],
     ...repositoryOverrides,
   };
   return service;

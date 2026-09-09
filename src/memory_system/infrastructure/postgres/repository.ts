@@ -1,6 +1,7 @@
 import {
   and,
   asc,
+  arrayOverlaps,
   desc,
   eq,
   gte,
@@ -27,6 +28,8 @@ import {
   RememberDailyEventInput,
   SearchDailyEventsInput,
 } from "../../domain/dailyEvent";
+import type { TurnRecordSearchRequest } from "../../api/contracts";
+import type { TurnSearchIndexEntry } from "../../application/usecases/turnSearchIndex";
 import { createDrizzleClient } from "./drizzleClient";
 import {
   memoryConversationChunksTable,
@@ -35,6 +38,7 @@ import {
   memoryTurnRecordsTable,
   userNotesTable,
   dailyEventsTable,
+  memoryTurnSearchIndexTable,
 } from "./schema";
 
 export class MemoryRepository {
@@ -210,6 +214,88 @@ export class MemoryRepository {
       .orderBy(asc(dailyEventsTable.eventDate), asc(dailyEventsTable.createdAt))
       .limit(input.limit ?? 20);
     return rows.map(mapDailyEventRow);
+  }
+
+  async upsertTurnSearchIndex(entry: TurnSearchIndexEntry): Promise<void> {
+    const values = {
+      turnRecordId: entry.turnRecordId,
+      botId: entry.botId,
+      threadId: entry.threadId,
+      kind: entry.kind,
+      roles: entry.roles,
+      occurredAt: new Date(entry.occurredAtIso),
+      excerpt: entry.excerpt,
+      embeddingJson: entry.embedding,
+      indexedAt: new Date(),
+    };
+    await this.db
+      .insert(memoryTurnSearchIndexTable)
+      .values(values)
+      .onConflictDoUpdate({
+        target: memoryTurnSearchIndexTable.turnRecordId,
+        set: values,
+      });
+  }
+
+  async fetchTurnSearchCandidates(
+    input: TurnRecordSearchRequest,
+    limit: number,
+  ): Promise<TurnSearchIndexEntry[]> {
+    const rows = await this.db
+      .select()
+      .from(memoryTurnSearchIndexTable)
+      .where(
+        and(
+          eq(memoryTurnSearchIndexTable.botId, input.botId),
+          eq(memoryTurnSearchIndexTable.threadId, input.threadId),
+          ...(input.from
+            ? [gte(memoryTurnSearchIndexTable.occurredAt, parseFrom(input.from))]
+            : []),
+          ...(input.to
+            ? [lte(memoryTurnSearchIndexTable.occurredAt, parseTo(input.to))]
+            : []),
+          ...(input.roles?.length
+            ? [arrayOverlaps(memoryTurnSearchIndexTable.roles, input.roles)]
+            : []),
+          ...(input.kinds?.length
+            ? [inArray(memoryTurnSearchIndexTable.kind, input.kinds)]
+            : []),
+        ),
+      )
+      .orderBy(desc(memoryTurnSearchIndexTable.occurredAt))
+      .limit(limit);
+    return rows.map((row) => ({
+      turnRecordId: row.turnRecordId,
+      botId: row.botId,
+      threadId: row.threadId,
+      kind: row.kind,
+      roles: row.roles as TurnSearchIndexEntry["roles"],
+      occurredAtIso: new Date(row.occurredAt).toISOString(),
+      excerpt: row.excerpt,
+      embedding: row.embeddingJson,
+    }));
+  }
+
+  async fetchUnindexedTurnRecords(
+    botId: string,
+    limit: number,
+  ): Promise<TurnRecord[]> {
+    const rows = await this.db
+      .select({ record: memoryTurnRecordsTable })
+      .from(memoryTurnRecordsTable)
+      .leftJoin(
+        memoryTurnSearchIndexTable,
+        eq(memoryTurnRecordsTable.id, memoryTurnSearchIndexTable.turnRecordId),
+      )
+      .where(
+        and(
+          eq(memoryTurnRecordsTable.botId, botId),
+          isNull(memoryTurnSearchIndexTable.turnRecordId),
+        ),
+      )
+      .orderBy(memoryTurnRecordsTable.createdAt)
+      .limit(limit);
+    return rows.map(({ record }) => mapTurnRecordRow(record));
   }
 
   async fetchTurnRecordsForThread(
@@ -603,3 +689,12 @@ const addDays = (date: Date, delta: number): Date => {
   return next;
 };
 const formatDateOnly = (date: Date): string => date.toISOString().slice(0, 10);
+const parseFrom = (value: string): Date =>
+  new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00.000Z` : value);
+
+const parseTo = (value: string): Date =>
+  new Date(
+    /^\d{4}-\d{2}-\d{2}$/.test(value)
+      ? `${value}T23:59:59.999Z`
+      : value,
+  );

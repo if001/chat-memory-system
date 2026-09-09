@@ -61,6 +61,23 @@ export interface ConversationHistorySearchItem {
   excerpt: string;
 }
 
+export interface TurnRecordSearchRequest {
+  botId: string;
+  threadId: string;
+  query: string;
+  from?: string;
+  to?: string;
+  roles?: Array<"system" | "user" | "assistant">;
+  kinds?: Array<"human" | "proactive" | "delegation">;
+  limit?: number;
+}
+
+export interface TurnRecordSearchItem {
+  turnRecordId: string;
+  occurredAt: string;
+  excerpt: string;
+}
+
 export interface UserMemorySearchItem {
   noteId: number;
   note: string;
@@ -120,6 +137,10 @@ export interface MemoryClientFacade {
   rememberDailyEvent(input: RememberDailyEventInput): Promise<DailyEvent>;
   searchDailyEvents(input: SearchDailyEventsInput): Promise<DailyEvent[]>;
   getDailyEventsByDate(input: GetDailyEventsByDateInput): Promise<DailyEvent[]>;
+  searchRelatedTurns(
+    input: TurnRecordSearchRequest,
+  ): Promise<TurnRecordSearchItem[]>;
+  backfillTurnSearchIndex(botId: string, limit?: number): Promise<number>;
 }
 
 const memoryScopeSet: ReadonlySet<string> = new Set(memoryScopes);
