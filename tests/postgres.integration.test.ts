@@ -56,6 +56,49 @@ integrationTest(
 );
 
 integrationTest(
+  "DailyEvent search combines inclusive date boundaries with full-text content",
+  async () => {
+    const userId = `it-daily-event-${Date.now()}`;
+    const repository = new MemoryRepository(postgresUrl as string);
+    try {
+      await cleanupDailyEvents(userId);
+      await repository.rememberDailyEvent({
+        userId,
+        eventDate: "2026-09-01",
+        summary: "Added tests for the queue worker",
+        tags: ["queue", "test"],
+      });
+      await repository.rememberDailyEvent({
+        userId,
+        eventDate: "2026-09-30",
+        summary: "Reviewed queue retry tests",
+        tags: ["queue", "review"],
+      });
+      await repository.rememberDailyEvent({
+        userId,
+        eventDate: "2026-10-01",
+        summary: "Added queue tests outside the range",
+      });
+
+      const events = await repository.searchDailyEvents({
+        userId,
+        query: "queue tests",
+        from: "2026-09-01",
+        to: "2026-09-30",
+      });
+
+      assert.deepEqual(events.map((event) => event.eventDate), [
+        "2026-09-30",
+        "2026-09-01",
+      ]);
+    } finally {
+      await cleanupDailyEvents(userId);
+      await repository.close();
+    }
+  },
+);
+
+integrationTest(
   "repository persists episodes and policy cards with the new schema",
   async () => {
     const botId = `it-repo-${Date.now()}`;
@@ -337,6 +380,15 @@ const cleanupUser = async (userId: string): Promise<void> => {
   const pool = new Pool({ connectionString: postgresUrl });
   try {
     await pool.query("DELETE FROM user_notes WHERE user_id = $1", [userId]);
+  } finally {
+    await pool.end();
+  }
+};
+
+const cleanupDailyEvents = async (userId: string): Promise<void> => {
+  const pool = new Pool({ connectionString: postgresUrl });
+  try {
+    await pool.query("DELETE FROM daily_events WHERE user_id = $1", [userId]);
   } finally {
     await pool.end();
   }

@@ -1,6 +1,12 @@
 import type { PolicyCard, TurnRecord } from "../domain/types";
 import type { QueryPolicyInput } from "./service";
 import type { UserMemoryWriteResult, UserNote } from "../domain/userMemory";
+import type {
+  DailyEvent,
+  GetDailyEventsByDateInput,
+  RememberDailyEventInput,
+  SearchDailyEventsInput,
+} from "../domain/dailyEvent";
 
 export const memoryScopes = [
   "conversation_history",
@@ -111,6 +117,9 @@ export interface MemoryClientFacade {
     note: string;
   }): Promise<UserMemoryWriteResult>;
   deleteUserNote(input: { userId: string; noteId: number }): Promise<boolean>;
+  rememberDailyEvent(input: RememberDailyEventInput): Promise<DailyEvent>;
+  searchDailyEvents(input: SearchDailyEventsInput): Promise<DailyEvent[]>;
+  getDailyEventsByDate(input: GetDailyEventsByDateInput): Promise<DailyEvent[]>;
 }
 
 const memoryScopeSet: ReadonlySet<string> = new Set(memoryScopes);

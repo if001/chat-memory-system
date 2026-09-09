@@ -36,6 +36,18 @@ export const userNotesTable = pgTable(
   ],
 );
 
+export const dailyEventsTable = pgTable("daily_events", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  userId: text("user_id").notNull(),
+  eventDate: text("event_date").notNull(),
+  summary: text("summary").notNull(),
+  tags: text("tags").array().notNull(),
+  sourceMessage: text("source_message"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 export const memoryTurnRecordsTable = appSchema.table("memory_turn_records", {
   id: text("id").primaryKey(),
   botId: text("bot_id").notNull(),

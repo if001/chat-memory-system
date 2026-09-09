@@ -1,5 +1,6 @@
 export * from "./memory_system/domain/types";
 export * from "./memory_system/domain/userMemory";
+export * from "./memory_system/domain/dailyEvent";
 export * from "./memory_system/api/service";
 export * from "./memory_system/api/contracts";
 export * from "./memory_system/api/backgroundRunner";
