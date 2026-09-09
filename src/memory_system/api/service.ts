@@ -92,6 +92,13 @@ export interface TurnMemoryProcessingResult {
   dailyEvents: Array<{ action: "created" | "kept"; event: DailyEvent }>;
 }
 
+export interface PendingTurnMemoryBatchResult {
+  selected: number;
+  claimed: number;
+  processed: number;
+  failed: number;
+}
+
 export interface MemorySystemService {
   ingestTurnRecord(input: TurnRecord): Promise<void>;
   getRecentConversationContext(input: {
@@ -148,6 +155,13 @@ export interface MemorySystemService {
     userId: string;
     turn: TurnRecord;
   }): Promise<TurnMemoryProcessingResult>;
+  processPendingTurnMemories(input: {
+    botId: string;
+    userId: string;
+    limit: number;
+    concurrency: number;
+    leaseMs?: number;
+  }): Promise<PendingTurnMemoryBatchResult>;
 }
 
 class DefaultMemorySystemService implements MemorySystemService {
@@ -582,6 +596,53 @@ class DefaultMemorySystemService implements MemorySystemService {
     return { status: "processed", candidates, userMemory, dailyEvents };
   }
 
+  async processPendingTurnMemories(input: {
+    botId: string;
+    userId: string;
+    limit: number;
+    concurrency: number;
+    leaseMs?: number;
+  }): Promise<PendingTurnMemoryBatchResult> {
+    const limit = Math.max(1, Math.floor(input.limit));
+    const concurrency = Math.max(1, Math.min(limit, Math.floor(input.concurrency)));
+    const leaseMs = Math.max(1_000, input.leaseMs ?? 5 * 60 * 1_000);
+    const batchStartedAt = new Date();
+    const selected = await this.repository.fetchPendingTurnMemoryRecords(
+      input.botId,
+      limit,
+      batchStartedAt,
+    );
+    const result: PendingTurnMemoryBatchResult = {
+      selected: selected.length,
+      claimed: 0,
+      processed: 0,
+      failed: 0,
+    };
+    await mapWithConcurrency(selected, concurrency, async (turn) => {
+      const record = ensureTurnRecordId(turn);
+      const claimed = await this.repository.claimTurnMemoryRecord(
+        record.id,
+        new Date(batchStartedAt.getTime() + leaseMs),
+        batchStartedAt,
+      );
+      if (!claimed) return;
+      result.claimed += 1;
+      try {
+        await this.processTurnMemoryCandidates({ userId: input.userId, turn: record });
+        await this.repository.completeTurnMemoryRecord(record.id, new Date());
+        result.processed += 1;
+      } catch (error) {
+        result.failed += 1;
+        await this.repository.releaseTurnMemoryRecord(record.id);
+        const detail = error instanceof Error ? error.message : String(error);
+        process.stdout.write(
+          `[memory-candidate-error] turnRecordId=${record.id} detail=${detail}\n`,
+        );
+      }
+    });
+    return result;
+  }
+
   async rememberUserNote(input: {
     userId: string;
     note: string;
@@ -944,6 +1005,24 @@ const latestIso = (values: string[]): string | undefined =>
 
 const normalizeMemoryText = (value: string): string =>
   value.replace(/\s+/g, " ").trim().toLocaleLowerCase();
+
+const mapWithConcurrency = async <T>(
+  items: T[],
+  concurrency: number,
+  process: (item: T) => Promise<void>,
+): Promise<void> => {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const item = items[next] as T;
+      next += 1;
+      await process(item);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, worker),
+  );
+};
 
 export const createMemorySystemService = (
   options: MemorySystemOptions,

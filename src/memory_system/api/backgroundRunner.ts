@@ -2,12 +2,16 @@ import { MemorySystemService } from "./service";
 
 export interface MemoryBackgroundRunnerOptions {
   botId: string;
+  userId: string;
   pollMs?: number;
   threadLimit?: number;
   turnLimitPerThread?: number;
   chunkLimit?: number;
   episodeLimit?: number;
   policyLimit?: number;
+  memoryCandidateBatchLimit?: number;
+  memoryCandidateConcurrency?: number;
+  memoryCandidateLeaseMs?: number;
 }
 
 export interface MemoryBackgroundRunner {
@@ -23,6 +27,7 @@ export const createMemoryBackgroundRunner = (
     | "buildConversationChunksForThread"
     | "processPendingEpisodes"
     | "buildOrUpdatePolicyCards"
+    | "processPendingTurnMemories"
   >,
   options: MemoryBackgroundRunnerOptions,
 ): MemoryBackgroundRunner => {
@@ -31,6 +36,9 @@ export const createMemoryBackgroundRunner = (
   const turnLimitPerThread = options.turnLimitPerThread ?? 200;
   const episodeLimit = options.episodeLimit ?? 20;
   const policyLimit = options.policyLimit ?? 20;
+  const memoryCandidateBatchLimit = options.memoryCandidateBatchLimit ?? 20;
+  const memoryCandidateConcurrency = options.memoryCandidateConcurrency ?? 2;
+  const memoryCandidateLeaseMs = options.memoryCandidateLeaseMs ?? 5 * 60_000;
 
   let timer: NodeJS.Timeout | null = null;
   let running = false;
@@ -47,6 +55,13 @@ export const createMemoryBackgroundRunner = (
         turnLimitPerThread,
       );
     }
+    await service.processPendingTurnMemories({
+      botId: options.botId,
+      userId: options.userId,
+      limit: memoryCandidateBatchLimit,
+      concurrency: memoryCandidateConcurrency,
+      leaseMs: memoryCandidateLeaseMs,
+    });
     await service.processPendingEpisodes(options.botId, episodeLimit);
     await service.buildOrUpdatePolicyCards(options.botId, policyLimit);
     console.log("----------- end --------------");

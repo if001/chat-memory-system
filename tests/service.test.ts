@@ -74,6 +74,10 @@ type RepositoryStub = {
     limit: number,
   ): Promise<TurnSearchIndexEntry[]>;
   fetchUnindexedTurnRecords(botId: string, limit: number): Promise<TurnRecord[]>;
+  fetchPendingTurnMemoryRecords(botId: string, limit: number, now: Date): Promise<TurnRecord[]>;
+  claimTurnMemoryRecord(turnRecordId: string, leaseUntil: Date, now: Date): Promise<boolean>;
+  completeTurnMemoryRecord(turnRecordId: string, now: Date): Promise<void>;
+  releaseTurnMemoryRecord(turnRecordId: string): Promise<void>;
 };
 
 type StubbedService = MemorySystemService & {
@@ -790,6 +794,111 @@ test("processTurnMemoryCandidates ignores proactive turns before calling the mod
   });
 });
 
+test("pending memory batch claims a TurnRecord once across concurrent runs", async () => {
+  const turn: TurnRecord = {
+    id: "turn-1",
+    botId: "ao",
+    threadId: "thread-1",
+    kind: "human",
+    createdAtIso: "2026-09-09T00:00:00.000Z",
+    messages: [],
+  };
+  let claimed = false;
+  let processed = 0;
+  const service = createStubbedService({
+    fetchPendingTurnMemoryRecords: async () => [turn],
+    claimTurnMemoryRecord: async () => {
+      if (claimed) return false;
+      claimed = true;
+      return true;
+    },
+    completeTurnMemoryRecord: async () => {},
+  });
+  service.processTurnMemoryCandidates = async () => {
+    processed += 1;
+    await Promise.resolve();
+    return { status: "processed", candidates: [], userMemory: [], dailyEvents: [] };
+  };
+
+  const results = await Promise.all([
+    service.processPendingTurnMemories({ botId: "ao", userId: "user-1", limit: 5, concurrency: 2 }),
+    service.processPendingTurnMemories({ botId: "ao", userId: "user-1", limit: 5, concurrency: 2 }),
+  ]);
+
+  assert.equal(processed, 1);
+  assert.equal(results.reduce((sum, result) => sum + result.claimed, 0), 1);
+});
+
+test("failed pending memory records are released and recovered on the next run", async () => {
+  const turn: TurnRecord = {
+    id: "turn-retry",
+    botId: "ao",
+    threadId: "thread-1",
+    kind: "human",
+    createdAtIso: "2026-09-09T00:00:00.000Z",
+    messages: [],
+  };
+  let claimed = false;
+  let attempts = 0;
+  let completions = 0;
+  const service = createStubbedService({
+    fetchPendingTurnMemoryRecords: async () => [turn],
+    claimTurnMemoryRecord: async () => {
+      if (claimed) return false;
+      claimed = true;
+      return true;
+    },
+    releaseTurnMemoryRecord: async () => { claimed = false; },
+    completeTurnMemoryRecord: async () => { completions += 1; },
+  });
+  service.processTurnMemoryCandidates = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("temporary classifier failure");
+    return { status: "processed", candidates: [], userMemory: [], dailyEvents: [] };
+  };
+
+  const first = await service.processPendingTurnMemories({
+    botId: "ao", userId: "user-1", limit: 5, concurrency: 2,
+  });
+  const second = await service.processPendingTurnMemories({
+    botId: "ao", userId: "user-1", limit: 5, concurrency: 2,
+  });
+
+  assert.equal(first.failed, 1);
+  assert.equal(second.processed, 1);
+  assert.equal(attempts, 2);
+  assert.equal(completions, 1);
+});
+
+test("pending memory batch never classifies proactive or delegation records", async () => {
+  const turns: TurnRecord[] = ["proactive", "delegation"].map((kind, index) => ({
+    id: `turn-${index}`,
+    botId: "ao",
+    threadId: "thread-1",
+    kind: kind as "proactive" | "delegation",
+    createdAtIso: "2026-09-09T00:00:00.000Z",
+    messages: [],
+  }));
+  let modelCalls = 0;
+  const completed: string[] = [];
+  const service = createStubbedService({
+    fetchPendingTurnMemoryRecords: async () => turns,
+    claimTurnMemoryRecord: async () => true,
+    completeTurnMemoryRecord: async (id) => { completed.push(id); },
+  });
+  service.llm.generateJson = async () => {
+    modelCalls += 1;
+    return {} as never;
+  };
+
+  await service.processPendingTurnMemories({
+    botId: "ao", userId: "user-1", limit: 5, concurrency: 2,
+  });
+
+  assert.equal(modelCalls, 0);
+  assert.deepEqual(completed.sort(), ["turn-0", "turn-1"]);
+});
+
 const createStubbedService = (
   repositoryOverrides: Partial<RepositoryStub>,
   responses: unknown[] = [],
@@ -851,6 +960,10 @@ const createStubbedService = (
     upsertTurnSearchIndex: async () => {},
     fetchTurnSearchCandidates: async () => [],
     fetchUnindexedTurnRecords: async () => [],
+    fetchPendingTurnMemoryRecords: async () => [],
+    claimTurnMemoryRecord: async () => false,
+    completeTurnMemoryRecord: async () => {},
+    releaseTurnMemoryRecord: async () => {},
     ...repositoryOverrides,
   };
   return service;

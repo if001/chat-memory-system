@@ -25,14 +25,19 @@ export const buildMemoryBackgroundRunnerFromEnv = (
   runner: MemoryBackgroundRunnerLike;
   meta: {
     botId: string;
+    userId: string;
     pollMs: number;
     threadLimit: number;
     turnLimitPerThread: number;
     episodeLimit: number;
     policyLimit: number;
+    memoryCandidateBatchLimit: number;
+    memoryCandidateConcurrency: number;
+    memoryCandidateLeaseMs: number;
   };
 } => {
   const botId = env.BOT_ID ?? "ao";
+  const userId = requiredFromEnv(env, "MEMORY_BACKGROUND_USER_ID");
   const pollMs = optionalNumberFromEnv(env, "MEMORY_BACKGROUND_POLL_MS", 5000);
 
   const service = dependencies.createMemorySystemService({
@@ -88,25 +93,48 @@ export const buildMemoryBackgroundRunnerFromEnv = (
     "MEMORY_BACKGROUND_POLICY_LIMIT",
     50,
   );
+  const memoryCandidateBatchLimit = optionalNumberFromEnv(
+    env,
+    "MEMORY_CANDIDATE_BATCH_LIMIT",
+    20,
+  );
+  const memoryCandidateConcurrency = optionalNumberFromEnv(
+    env,
+    "MEMORY_CANDIDATE_CONCURRENCY",
+    2,
+  );
+  const memoryCandidateLeaseMs = optionalNumberFromEnv(
+    env,
+    "MEMORY_CANDIDATE_LEASE_MS",
+    5 * 60_000,
+  );
 
   const runner = dependencies.createMemoryBackgroundRunner(service, {
     botId,
+    userId,
     pollMs,
     threadLimit,
     turnLimitPerThread,
     episodeLimit,
     policyLimit,
+    memoryCandidateBatchLimit,
+    memoryCandidateConcurrency,
+    memoryCandidateLeaseMs,
   });
 
   return {
     runner,
     meta: {
       botId,
+      userId,
       pollMs,
       threadLimit,
       turnLimitPerThread,
       episodeLimit,
       policyLimit,
+      memoryCandidateBatchLimit,
+      memoryCandidateConcurrency,
+      memoryCandidateLeaseMs,
     },
   };
 };

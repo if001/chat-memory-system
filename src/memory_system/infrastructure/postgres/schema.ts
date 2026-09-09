@@ -74,6 +74,19 @@ export const memoryTurnRecordsTable = appSchema.table("memory_turn_records", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
 });
 
+export const memoryTurnMemoryProcessingTable = appSchema.table(
+  "memory_turn_memory_processing",
+  {
+    turnRecordId: text("turn_record_id").primaryKey(),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("memory_turn_processing_lease_idx").on(table.leaseUntil)],
+);
+
 export const memoryTurnSearchIndexTable = appSchema.table(
   "memory_turn_search_index",
   {
