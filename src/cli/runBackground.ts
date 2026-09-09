@@ -184,10 +184,8 @@ const optionalNumberFromEnv = (
 };
 
 if (require.main === module) {
-  void main().catch((error: unknown) => {
-    const message =
-      error instanceof Error ? (error.stack ?? error.message) : String(error);
-    process.stdout.write(`${message}\n`);
+  void main().catch(() => {
+    process.stdout.write("[memory-background-error] startup failed\n");
     process.exit(1);
   });
 }

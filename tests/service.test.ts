@@ -398,7 +398,7 @@ test("UserMemory search reports embedding failures as unavailable", async () => 
 
   assert.deepEqual(result.userMemory, {
     status: "unavailable",
-    reason: "embedding service offline",
+    reason: "UserMemory search failed",
   });
 });
 
@@ -706,7 +706,7 @@ test("inspectCatalog isolates unavailable and empty memory areas", async () => {
   const catalog = await service.inspectCatalog({ botId: "ao", threadId: "thread-1", userId: "user-1" });
 
   assert.deepEqual(catalog.conversationHistory, {
-    status: "unavailable", available: false, topics: [], reason: "turn store offline",
+    status: "unavailable", available: false, topics: [], reason: "Catalog backend failed",
   });
   assert.deepEqual(catalog.userMemory, { status: "empty", available: false, topics: [] });
   assert.equal(catalog.dailyEvents.status, "empty");
