@@ -37,7 +37,9 @@ export const buildMemoryBackgroundRunnerFromEnv = (
   };
 } => {
   const botId = env.BOT_ID ?? "ao";
-  const userId = requiredFromEnv(env, "MEMORY_BACKGROUND_USER_ID");
+  const userId =
+    env.MEMORY_BACKGROUND_USER_ID ??
+    requiredFromEnv(env, "SIMPLE_POMDP_USER_ID");
   const pollMs = optionalNumberFromEnv(env, "MEMORY_BACKGROUND_POLL_MS", 5000);
 
   const service = dependencies.createMemorySystemService({
