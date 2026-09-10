@@ -17,6 +17,207 @@ const postgresUrl = process.env.MEMORY_SYSTEM_TEST_POSTGRES_URL;
 
 const integrationTest = postgresUrl ? test : test.skip;
 integrationTest(
+  "UserMemory repository shares user scope, deduplicates, replaces, and deletes notes",
+  async () => {
+    const userId = `it-user-memory-${Date.now()}`;
+    const repository = new MemoryRepository(postgresUrl as string);
+    try {
+      await cleanupUser(userId);
+      const created = await repository.rememberUserNote(
+        userId,
+        "Prefer concise answers",
+      );
+      const duplicate = await repository.rememberUserNote(
+        userId,
+        " prefer concise answers! ",
+      );
+      assert.equal(duplicate.id, created.id);
+      assert.equal((await repository.searchUserNotes(userId, "", 10)).length, 1);
+
+      const replaced = await repository.replaceUserNote(
+        userId,
+        created.id,
+        "Prefer detailed answers",
+      );
+      assert.equal(replaced?.note, "Prefer detailed answers");
+      assert.deepEqual(
+        (await repository.searchUserNotes(userId, "concise", 10)).map(
+          (item) => item.note,
+        ),
+        [],
+      );
+      assert.equal(await repository.deleteUserNote(userId, created.id), true);
+      assert.deepEqual(await repository.searchUserNotes(userId, "", 10), []);
+    } finally {
+      await cleanupUser(userId);
+      await repository.close();
+    }
+  },
+);
+
+integrationTest(
+  "UserMemory search index keeps user scope and exposes unindexed notes for backfill",
+  async () => {
+    const userId = `it-user-memory-index-${Date.now()}`;
+    const otherUserId = `${userId}-other`;
+    const repository = new MemoryRepository(postgresUrl as string);
+    try {
+      await cleanupUser(userId);
+      await cleanupUser(otherUserId);
+      const indexed = await repository.rememberUserNote(
+        userId,
+        "I enjoy jazz",
+      );
+      const pending = await repository.rememberUserNote(userId, "I prefer tea");
+      const other = await repository.rememberUserNote(
+        otherUserId,
+        "I enjoy jazz",
+      );
+      await repository.upsertUserMemorySearchIndex({
+        noteId: indexed.id,
+        userId,
+        note: indexed.note,
+        embedding: [1, 0],
+      });
+      await repository.upsertUserMemorySearchIndex({
+        noteId: other.id,
+        userId: otherUserId,
+        note: other.note,
+        embedding: [1, 0],
+      });
+
+      assert.deepEqual(
+        (await repository.fetchUserMemorySearchCandidates(userId, 10)).map(
+          (entry) => entry.noteId,
+        ),
+        [indexed.id],
+      );
+      assert.deepEqual(
+        (await repository.fetchUnindexedUserNotes(userId, 10)).map(
+          (note) => note.id,
+        ),
+        [pending.id],
+      );
+      await repository.deleteUserMemorySearchIndex(indexed.id);
+      assert.deepEqual(
+        (await repository.fetchUnindexedUserNotes(userId, 10)).map(
+          (note) => note.id,
+        ),
+        [indexed.id, pending.id],
+      );
+    } finally {
+      await cleanupUser(userId);
+      await cleanupUser(otherUserId);
+      await repository.close();
+    }
+  },
+);
+
+integrationTest(
+  "DailyEvent search combines inclusive date boundaries with full-text content",
+  async () => {
+    const userId = `it-daily-event-${Date.now()}`;
+    const repository = new MemoryRepository(postgresUrl as string);
+    try {
+      await cleanupDailyEvents(userId);
+      await repository.rememberDailyEvent({
+        userId,
+        eventDate: "2026-09-01",
+        summary: "Added tests for the queue worker",
+        tags: ["queue", "test"],
+      });
+      await repository.rememberDailyEvent({
+        userId,
+        eventDate: "2026-09-30",
+        summary: "Reviewed queue retry tests",
+        tags: ["queue", "review"],
+      });
+      await repository.rememberDailyEvent({
+        userId,
+        eventDate: "2026-10-01",
+        summary: "Added queue tests outside the range",
+      });
+
+      const events = await repository.searchDailyEvents({
+        userId,
+        query: "queue tests",
+        from: "2026-09-01",
+        to: "2026-09-30",
+      });
+
+      assert.deepEqual(events.map((event) => event.eventDate), [
+        "2026-09-30",
+        "2026-09-01",
+      ]);
+    } finally {
+      await cleanupDailyEvents(userId);
+      await repository.close();
+    }
+  },
+);
+
+integrationTest(
+  "turn search index enforces bot, thread, role, kind, and date filters",
+  async () => {
+    const suffix = Date.now();
+    const botId = `it-search-${suffix}`;
+    const repository = new MemoryRepository(postgresUrl as string);
+    try {
+      await cleanupBot(botId);
+      await repository.upsertTurnSearchIndex({
+        turnRecordId: "matching-turn",
+        botId,
+        threadId: "thread-1",
+        kind: "human",
+        roles: ["user", "assistant"],
+        occurredAtIso: "2026-01-15T00:00:00.000Z",
+        excerpt: "user: jazz records",
+        embedding: [1, 0],
+      });
+      await repository.upsertTurnSearchIndex({
+        turnRecordId: "wrong-kind",
+        botId,
+        threadId: "thread-1",
+        kind: "proactive",
+        roles: ["user", "assistant"],
+        occurredAtIso: "2026-01-15T00:00:00.000Z",
+        excerpt: "user: proactive jazz suggestion",
+        embedding: [1, 0],
+      });
+      await repository.upsertTurnSearchIndex({
+        turnRecordId: "outside-range",
+        botId,
+        threadId: "thread-1",
+        kind: "human",
+        roles: ["user"],
+        occurredAtIso: "2026-02-01T00:00:00.000Z",
+        excerpt: "user: jazz festival",
+        embedding: [1, 0],
+      });
+
+      const results = await repository.fetchTurnSearchCandidates(
+        {
+          botId,
+          threadId: "thread-1",
+          query: "music",
+          from: "2026-01-01",
+          to: "2026-01-31",
+          roles: ["assistant"],
+          kinds: ["human"],
+        },
+        10,
+      );
+      assert.deepEqual(results.map((item) => item.turnRecordId), [
+        "matching-turn",
+      ]);
+    } finally {
+      await cleanupBot(botId);
+      await repository.close();
+    }
+  },
+);
+
+integrationTest(
   "repository persists episodes and policy cards with the new schema",
   async () => {
     const botId = `it-repo-${Date.now()}`;
@@ -276,6 +477,10 @@ const buildTurnRecord = (botId: string, threadId: string): TurnRecord => ({
 const cleanupBot = async (botId: string): Promise<void> => {
   const pool = new Pool({ connectionString: postgresUrl });
   try {
+    await pool.query(
+      "DELETE FROM app.memory_turn_search_index WHERE bot_id = $1",
+      [botId],
+    );
     await pool.query("DELETE FROM app.memory_policy_cards WHERE bot_id = $1", [
       botId,
     ]);
@@ -289,6 +494,28 @@ const cleanupBot = async (botId: string): Promise<void> => {
     await pool.query("DELETE FROM app.memory_turn_records WHERE bot_id = $1", [
       botId,
     ]);
+  } finally {
+    await pool.end();
+  }
+};
+
+const cleanupUser = async (userId: string): Promise<void> => {
+  const pool = new Pool({ connectionString: postgresUrl });
+  try {
+    await pool.query(
+      "DELETE FROM app.memory_user_note_search_index WHERE user_id = $1",
+      [userId],
+    );
+    await pool.query("DELETE FROM user_notes WHERE user_id = $1", [userId]);
+  } finally {
+    await pool.end();
+  }
+};
+
+const cleanupDailyEvents = async (userId: string): Promise<void> => {
+  const pool = new Pool({ connectionString: postgresUrl });
+  try {
+    await pool.query("DELETE FROM daily_events WHERE user_id = $1", [userId]);
   } finally {
     await pool.end();
   }

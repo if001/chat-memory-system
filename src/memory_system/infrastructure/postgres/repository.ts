@@ -1,4 +1,18 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  arrayOverlaps,
+  desc,
+  eq,
+  gte,
+  ilike,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 import { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import {
@@ -8,12 +22,27 @@ import {
   TurnRecord,
 } from "../../domain/types";
 import { ensureTurnRecordId } from "../../domain/identifiers";
+import { UserNote } from "../../domain/userMemory";
+import { UserMemorySearchIndexEntry } from "../../application/usecases/userMemorySearch";
+import {
+  DailyEvent,
+  GetDailyEventsByDateInput,
+  RememberDailyEventInput,
+  SearchDailyEventsInput,
+} from "../../domain/dailyEvent";
+import type { TurnRecordSearchRequest } from "../../api/contracts";
+import type { TurnSearchIndexEntry } from "../../application/usecases/turnSearchIndex";
 import { createDrizzleClient } from "./drizzleClient";
 import {
   memoryConversationChunksTable,
   memoryEpisodeCasesTable,
   memoryPolicyCardsTable,
   memoryTurnRecordsTable,
+  memoryTurnMemoryProcessingTable,
+  memoryUserNoteSearchIndexTable,
+  userNotesTable,
+  dailyEventsTable,
+  memoryTurnSearchIndexTable,
 } from "./schema";
 
 export class MemoryRepository {
@@ -43,6 +72,397 @@ export class MemoryRepository {
         createdAt: new Date(record.createdAtIso),
       })
       .onConflictDoNothing();
+  }
+
+  async fetchPendingTurnMemoryRecords(
+    botId: string,
+    limit: number,
+    now: Date,
+  ): Promise<TurnRecord[]> {
+    const rows = await this.db
+      .select({ record: memoryTurnRecordsTable })
+      .from(memoryTurnRecordsTable)
+      .leftJoin(
+        memoryTurnMemoryProcessingTable,
+        eq(
+          memoryTurnRecordsTable.id,
+          memoryTurnMemoryProcessingTable.turnRecordId,
+        ),
+      )
+      .where(
+        and(
+          eq(memoryTurnRecordsTable.botId, botId),
+          eq(memoryTurnRecordsTable.kind, "human"),
+          isNull(memoryTurnMemoryProcessingTable.processedAt),
+          or(
+            isNull(memoryTurnMemoryProcessingTable.turnRecordId),
+            isNull(memoryTurnMemoryProcessingTable.leaseUntil),
+            lt(memoryTurnMemoryProcessingTable.leaseUntil, now),
+          ),
+        ),
+      )
+      .orderBy(asc(memoryTurnRecordsTable.createdAt))
+      .limit(limit);
+    return rows.map(({ record }) => mapTurnRecordRow(record));
+  }
+
+  async claimTurnMemoryRecord(
+    turnRecordId: string,
+    leaseUntil: Date,
+    now: Date,
+  ): Promise<boolean> {
+    const rows = await this.db
+      .insert(memoryTurnMemoryProcessingTable)
+      .values({ turnRecordId, leaseUntil, updatedAt: now })
+      .onConflictDoUpdate({
+        target: memoryTurnMemoryProcessingTable.turnRecordId,
+        set: { leaseUntil, updatedAt: now },
+        where: and(
+          isNull(memoryTurnMemoryProcessingTable.processedAt),
+          or(
+            isNull(memoryTurnMemoryProcessingTable.leaseUntil),
+            lt(memoryTurnMemoryProcessingTable.leaseUntil, now),
+          ),
+        ),
+      })
+      .returning({ turnRecordId: memoryTurnMemoryProcessingTable.turnRecordId });
+    return rows.length === 1;
+  }
+
+  async completeTurnMemoryRecord(turnRecordId: string, now: Date): Promise<void> {
+    await this.db
+      .update(memoryTurnMemoryProcessingTable)
+      .set({ processedAt: now, leaseUntil: null, updatedAt: now })
+      .where(eq(memoryTurnMemoryProcessingTable.turnRecordId, turnRecordId));
+  }
+
+  async releaseTurnMemoryRecord(turnRecordId: string): Promise<void> {
+    await this.db
+      .delete(memoryTurnMemoryProcessingTable)
+      .where(
+        and(
+          eq(memoryTurnMemoryProcessingTable.turnRecordId, turnRecordId),
+          isNull(memoryTurnMemoryProcessingTable.processedAt),
+        ),
+      );
+  }
+
+  async rememberUserNote(userId: string, note: string): Promise<UserNote> {
+    const normalized = normalizeNote(note);
+    const existing = (await this.searchUserNotes(userId, "", 100)).find(
+      (item) => normalizeNote(item.note) === normalized,
+    );
+    if (existing) return existing;
+    const rows = await this.db
+      .insert(userNotesTable)
+      .values({ userId, note: note.trim() })
+      .onConflictDoNothing()
+      .returning();
+    if (rows[0]) return mapUserNote(rows[0]);
+    const concurrent = (await this.searchUserNotes(userId, "", 100)).find(
+      (item) => normalizeNote(item.note) === normalized,
+    );
+    if (!concurrent) {
+      throw new Error("UserMemory note insert did not return a row");
+    }
+    return concurrent;
+  }
+
+  async searchUserNotes(
+    userId: string,
+    query: string,
+    limit: number,
+  ): Promise<UserNote[]> {
+    const normalizedQuery = query.trim();
+    let statement = this.db.select().from(userNotesTable).$dynamic();
+    statement = statement.where(
+      normalizedQuery
+        ? and(
+            eq(userNotesTable.userId, userId),
+            ilike(userNotesTable.note, `%${escapeLike(normalizedQuery)}%`),
+          )
+        : eq(userNotesTable.userId, userId),
+    );
+    const rows = await statement
+      .orderBy(desc(userNotesTable.createdAt))
+      .limit(limit);
+    return rows.map(mapUserNote);
+  }
+
+  async replaceUserNote(
+    userId: string,
+    noteId: number,
+    note: string,
+  ): Promise<UserNote | null> {
+    const equivalent = (await this.searchUserNotes(userId, "", 100)).find(
+      (item) =>
+        item.id !== noteId && normalizeNote(item.note) === normalizeNote(note),
+    );
+    if (equivalent) {
+      await this.deleteUserNote(userId, noteId);
+      return equivalent;
+    }
+    const rows = await this.db
+      .update(userNotesTable)
+      .set({ note: note.trim() })
+      .where(
+        and(eq(userNotesTable.userId, userId), eq(userNotesTable.id, noteId)),
+      )
+      .returning();
+    return rows[0] ? mapUserNote(rows[0]) : null;
+  }
+
+  async deleteUserNote(userId: string, noteId: number): Promise<boolean> {
+    const rows = await this.db
+      .delete(userNotesTable)
+      .where(
+        and(eq(userNotesTable.userId, userId), eq(userNotesTable.id, noteId)),
+      )
+      .returning({ id: userNotesTable.id });
+    return rows.length > 0;
+  }
+
+  async upsertUserMemorySearchIndex(
+    entry: UserMemorySearchIndexEntry,
+  ): Promise<void> {
+    const values = {
+      noteId: entry.noteId,
+      userId: entry.userId,
+      note: entry.note,
+      embeddingJson: entry.embedding,
+      indexedAt: new Date(),
+    };
+    await this.db
+      .insert(memoryUserNoteSearchIndexTable)
+      .values(values)
+      .onConflictDoUpdate({
+        target: memoryUserNoteSearchIndexTable.noteId,
+        set: values,
+      });
+  }
+
+  async deleteUserMemorySearchIndex(noteId: number): Promise<void> {
+    await this.db
+      .delete(memoryUserNoteSearchIndexTable)
+      .where(eq(memoryUserNoteSearchIndexTable.noteId, noteId));
+  }
+
+  async fetchUserMemorySearchCandidates(
+    userId: string,
+    limit: number,
+  ): Promise<Array<UserMemorySearchIndexEntry & { createdAt: Date }>> {
+    const rows = await this.db
+      .select({
+        index: memoryUserNoteSearchIndexTable,
+        createdAt: userNotesTable.createdAt,
+      })
+      .from(memoryUserNoteSearchIndexTable)
+      .innerJoin(
+        userNotesTable,
+        and(
+          eq(userNotesTable.id, memoryUserNoteSearchIndexTable.noteId),
+          eq(userNotesTable.userId, memoryUserNoteSearchIndexTable.userId),
+        ),
+      )
+      .where(eq(memoryUserNoteSearchIndexTable.userId, userId))
+      .limit(limit);
+    return rows.map((row) => ({
+      noteId: row.index.noteId,
+      userId: row.index.userId,
+      note: row.index.note,
+      embedding: row.index.embeddingJson,
+      createdAt: new Date(row.createdAt),
+    }));
+  }
+
+  async fetchUnindexedUserNotes(
+    userId: string,
+    limit: number,
+  ): Promise<UserNote[]> {
+    const rows = await this.db
+      .select({ note: userNotesTable })
+      .from(userNotesTable)
+      .leftJoin(
+        memoryUserNoteSearchIndexTable,
+        eq(userNotesTable.id, memoryUserNoteSearchIndexTable.noteId),
+      )
+      .where(
+        and(
+          eq(userNotesTable.userId, userId),
+          isNull(memoryUserNoteSearchIndexTable.noteId),
+        ),
+      )
+      .orderBy(userNotesTable.createdAt)
+      .limit(limit);
+    return rows.map(({ note }) => mapUserNote(note));
+  }
+
+  async rememberDailyEvent(input: RememberDailyEventInput): Promise<DailyEvent> {
+    const [row] = await this.db
+      .insert(dailyEventsTable)
+      .values({
+        userId: input.userId,
+        eventDate: normalizeDateInput(input.eventDate),
+        summary: input.summary,
+        tags: input.tags ?? [],
+        ...(input.sourceMessage ? { sourceMessage: input.sourceMessage } : {}),
+      })
+      .returning();
+    if (!row) {
+      throw new Error("failed to persist daily event");
+    }
+    return mapDailyEventRow(row);
+  }
+
+  async searchDailyEvents(input: SearchDailyEventsInput): Promise<DailyEvent[]> {
+    const query = input.query.trim();
+    const content = sql`concat_ws(' ', ${dailyEventsTable.summary}, ${dailyEventsTable.sourceMessage}, array_to_string(${dailyEventsTable.tags}, ' '))`;
+    const conditions = [
+      eq(dailyEventsTable.userId, input.userId),
+      ...(query
+        ? [
+            or(
+              sql`to_tsvector('simple', ${content}) @@ websearch_to_tsquery('simple', ${query})`,
+              sql`${content} ILIKE ${`%${escapeLike(query)}%`} ESCAPE '\\'`,
+            ),
+          ]
+        : []),
+      ...(input.from
+        ? [gte(dailyEventsTable.eventDate, normalizeDateInput(input.from))]
+        : []),
+      ...(input.to
+        ? [lte(dailyEventsTable.eventDate, normalizeDateInput(input.to))]
+        : []),
+    ];
+    const rows = await this.db
+      .select()
+      .from(dailyEventsTable)
+      .where(and(...conditions))
+      .orderBy(
+        desc(dailyEventsTable.eventDate),
+        desc(dailyEventsTable.createdAt),
+      )
+      .limit(input.limit ?? 10);
+    return rows.map(mapDailyEventRow);
+  }
+
+  async getDailyEventsByDate(
+    input: GetDailyEventsByDateInput,
+  ): Promise<DailyEvent[]> {
+    const windowDays = input.windowDays ?? 3;
+    const center = parseDateOnly(normalizeDateInput(input.date));
+    const from = formatDateOnly(addDays(center, -windowDays));
+    const to = formatDateOnly(addDays(center, windowDays));
+    const rows = await this.db
+      .select()
+      .from(dailyEventsTable)
+      .where(
+        and(
+          eq(dailyEventsTable.userId, input.userId),
+          gte(dailyEventsTable.eventDate, from),
+          lte(dailyEventsTable.eventDate, to),
+        ),
+      )
+      .orderBy(asc(dailyEventsTable.eventDate), asc(dailyEventsTable.createdAt))
+      .limit(input.limit ?? 20);
+    return rows.map(mapDailyEventRow);
+  }
+
+  async getDailyEventDateRange(
+    userId: string,
+  ): Promise<{ from?: string; to?: string } | undefined> {
+    const rows = await this.db
+      .select({
+        from: sql<string | null>`min(${dailyEventsTable.eventDate})`,
+        to: sql<string | null>`max(${dailyEventsTable.eventDate})`,
+      })
+      .from(dailyEventsTable)
+      .where(eq(dailyEventsTable.userId, userId));
+    const row = rows[0];
+    if (!row?.from || !row.to) return undefined;
+    return { from: row.from, to: row.to };
+  }
+
+  async upsertTurnSearchIndex(entry: TurnSearchIndexEntry): Promise<void> {
+    const values = {
+      turnRecordId: entry.turnRecordId,
+      botId: entry.botId,
+      threadId: entry.threadId,
+      kind: entry.kind,
+      roles: entry.roles,
+      occurredAt: new Date(entry.occurredAtIso),
+      excerpt: entry.excerpt,
+      embeddingJson: entry.embedding,
+      indexedAt: new Date(),
+    };
+    await this.db
+      .insert(memoryTurnSearchIndexTable)
+      .values(values)
+      .onConflictDoUpdate({
+        target: memoryTurnSearchIndexTable.turnRecordId,
+        set: values,
+      });
+  }
+
+  async fetchTurnSearchCandidates(
+    input: TurnRecordSearchRequest,
+    limit: number,
+  ): Promise<TurnSearchIndexEntry[]> {
+    const rows = await this.db
+      .select()
+      .from(memoryTurnSearchIndexTable)
+      .where(
+        and(
+          eq(memoryTurnSearchIndexTable.botId, input.botId),
+          eq(memoryTurnSearchIndexTable.threadId, input.threadId),
+          ...(input.from
+            ? [gte(memoryTurnSearchIndexTable.occurredAt, parseFrom(input.from))]
+            : []),
+          ...(input.to
+            ? [lte(memoryTurnSearchIndexTable.occurredAt, parseTo(input.to))]
+            : []),
+          ...(input.roles?.length
+            ? [arrayOverlaps(memoryTurnSearchIndexTable.roles, input.roles)]
+            : []),
+          ...(input.kinds?.length
+            ? [inArray(memoryTurnSearchIndexTable.kind, input.kinds)]
+            : []),
+        ),
+      )
+      .orderBy(desc(memoryTurnSearchIndexTable.occurredAt))
+      .limit(limit);
+    return rows.map((row) => ({
+      turnRecordId: row.turnRecordId,
+      botId: row.botId,
+      threadId: row.threadId,
+      kind: row.kind,
+      roles: row.roles as TurnSearchIndexEntry["roles"],
+      occurredAtIso: new Date(row.occurredAt).toISOString(),
+      excerpt: row.excerpt,
+      embedding: row.embeddingJson,
+    }));
+  }
+
+  async fetchUnindexedTurnRecords(
+    botId: string,
+    limit: number,
+  ): Promise<TurnRecord[]> {
+    const rows = await this.db
+      .select({ record: memoryTurnRecordsTable })
+      .from(memoryTurnRecordsTable)
+      .leftJoin(
+        memoryTurnSearchIndexTable,
+        eq(memoryTurnRecordsTable.id, memoryTurnSearchIndexTable.turnRecordId),
+      )
+      .where(
+        and(
+          eq(memoryTurnRecordsTable.botId, botId),
+          isNull(memoryTurnSearchIndexTable.turnRecordId),
+        ),
+      )
+      .orderBy(memoryTurnRecordsTable.createdAt)
+      .limit(limit);
+    return rows.map(({ record }) => mapTurnRecordRow(record));
   }
 
   async fetchTurnRecordsForThread(
@@ -395,3 +815,53 @@ const mapPolicyCardRow = (
   createdAtIso: new Date(row.createdAt).toISOString(),
   lastUpdatedIso: new Date(row.lastUpdated).toISOString(),
 });
+
+const normalizeNote = (value: string): string =>
+  value.trim().toLocaleLowerCase().replace(/[\s。、,.!！?？]+/gu, " ").trim();
+
+const mapUserNote = (
+  row: typeof userNotesTable.$inferSelect,
+): UserNote => ({
+  id: row.id,
+  note: row.note,
+  createdAt: new Date(row.createdAt),
+});
+
+const mapDailyEventRow = (
+  row: typeof dailyEventsTable.$inferSelect,
+): DailyEvent => ({
+  id: row.id,
+  userId: row.userId,
+  eventDate: row.eventDate,
+  summary: row.summary,
+  tags: row.tags,
+  ...(row.sourceMessage ? { sourceMessage: row.sourceMessage } : {}),
+  createdAt: new Date(row.createdAt),
+});
+
+const normalizeDateInput = (value: string): string => {
+  if (/^\d{8}$/.test(value)) {
+    return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  throw new Error(`invalid date format: ${value}`);
+};
+
+const escapeLike = (value: string): string => value.replace(/[%_\\]/g, "\\$&");
+const parseDateOnly = (value: string): Date =>
+  new Date(`${value}T00:00:00.000Z`);
+const addDays = (date: Date, delta: number): Date => {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + delta);
+  return next;
+};
+const formatDateOnly = (date: Date): string => date.toISOString().slice(0, 10);
+const parseFrom = (value: string): Date =>
+  new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00.000Z` : value);
+
+const parseTo = (value: string): Date =>
+  new Date(
+    /^\d{4}-\d{2}-\d{2}$/.test(value)
+      ? `${value}T23:59:59.999Z`
+      : value,
+  );

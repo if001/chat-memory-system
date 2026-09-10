@@ -15,6 +15,10 @@ const testBackgroundRunnerProcessesThreadsThenEpisodesThenPolicies = async (): P
         calls.push(`buildConversationChunksForThread:${botId}:${threadId}:${limit}`);
         return [];
       },
+      processPendingTurnMemories: async (input) => {
+        calls.push(`processPendingTurnMemories:${input.botId}:${input.userId}:${input.limit}:${input.concurrency}:${input.leaseMs}`);
+        return { selected: 0, claimed: 0, processed: 0, failed: 0 };
+      },
       processPendingEpisodes: async (botId, limit) => {
         calls.push(`processPendingEpisodes:${botId}:${limit}`);
         return [];
@@ -26,10 +30,14 @@ const testBackgroundRunnerProcessesThreadsThenEpisodesThenPolicies = async (): P
     },
     {
       botId: "ao",
+      userId: "user-1",
       threadLimit: 10,
       turnLimitPerThread: 40,
       episodeLimit: 15,
       policyLimit: 12,
+      memoryCandidateBatchLimit: 7,
+      memoryCandidateConcurrency: 3,
+      memoryCandidateLeaseMs: 45_000,
     },
   );
 
@@ -39,6 +47,7 @@ const testBackgroundRunnerProcessesThreadsThenEpisodesThenPolicies = async (): P
     "listThreadIds:ao:10",
     "buildConversationChunksForThread:ao:thread-a:40",
     "buildConversationChunksForThread:ao:thread-b:40",
+    "processPendingTurnMemories:ao:user-1:7:3:45000",
     "processPendingEpisodes:ao:15",
     "buildOrUpdatePolicyCards:ao:12",
   ]);

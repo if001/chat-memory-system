@@ -2,12 +2,16 @@ import { MemorySystemService } from "./service";
 
 export interface MemoryBackgroundRunnerOptions {
   botId: string;
+  userId: string;
   pollMs?: number;
   threadLimit?: number;
   turnLimitPerThread?: number;
   chunkLimit?: number;
   episodeLimit?: number;
   policyLimit?: number;
+  memoryCandidateBatchLimit?: number;
+  memoryCandidateConcurrency?: number;
+  memoryCandidateLeaseMs?: number;
 }
 
 export interface MemoryBackgroundRunner {
@@ -23,6 +27,7 @@ export const createMemoryBackgroundRunner = (
     | "buildConversationChunksForThread"
     | "processPendingEpisodes"
     | "buildOrUpdatePolicyCards"
+    | "processPendingTurnMemories"
   >,
   options: MemoryBackgroundRunnerOptions,
 ): MemoryBackgroundRunner => {
@@ -31,15 +36,18 @@ export const createMemoryBackgroundRunner = (
   const turnLimitPerThread = options.turnLimitPerThread ?? 200;
   const episodeLimit = options.episodeLimit ?? 20;
   const policyLimit = options.policyLimit ?? 20;
+  const memoryCandidateBatchLimit = options.memoryCandidateBatchLimit ?? 20;
+  const memoryCandidateConcurrency = options.memoryCandidateConcurrency ?? 2;
+  const memoryCandidateLeaseMs = options.memoryCandidateLeaseMs ?? 5 * 60_000;
 
   let timer: NodeJS.Timeout | null = null;
   let running = false;
   let inFlight: Promise<void> | null = null;
 
   const runOnce = async (): Promise<void> => {
-    console.log("run");
+    console.log("[memory-background] cycle start");
     const threadIds = await service.listThreadIds(options.botId, threadLimit);
-    console.log("threadIds", threadIds);
+    console.log("[memory-background] threads", threadIds.length);
     for (const threadId of threadIds) {
       await service.buildConversationChunksForThread(
         options.botId,
@@ -47,9 +55,16 @@ export const createMemoryBackgroundRunner = (
         turnLimitPerThread,
       );
     }
+    await service.processPendingTurnMemories({
+      botId: options.botId,
+      userId: options.userId,
+      limit: memoryCandidateBatchLimit,
+      concurrency: memoryCandidateConcurrency,
+      leaseMs: memoryCandidateLeaseMs,
+    });
     await service.processPendingEpisodes(options.botId, episodeLimit);
     await service.buildOrUpdatePolicyCards(options.botId, policyLimit);
-    console.log("----------- end --------------");
+    console.log("[memory-background] cycle complete");
   };
 
   const tick = (): void => {
@@ -59,9 +74,7 @@ export const createMemoryBackgroundRunner = (
     inFlight = runOnce()
       .catch((error: unknown) => {
         const message =
-          error instanceof Error
-            ? (error.stack ?? error.message)
-            : String(error);
+          error instanceof Error ? (error.stack ?? error.message) : String(error);
         process.stdout.write(`[memory-background-error] ${message}\n`);
       })
       .finally(() => {
