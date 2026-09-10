@@ -34,15 +34,17 @@ export const buildPolicyHypothesisFromEpisodes = async (
       "state: そのときのユーザー要求、会話文脈、対象領域、目的",
       "action: Agentが実際に行った応答戦略や情報取得戦略",
       "outcome: actionの後に生じた、ユーザー理解や会話状態の変化",
-      "Policyは、具体的な回答内容の要約ではありません。",
-      "Policyは適用条件、推奨行動、必要なら回避行動だけを持つ抽象的な行動方針です。",
-      "## appliesWhen",
+      "Policyは、具体的な回答内容の要約ではありません。適用条件、推奨行動、必要なら回避行動だけを持つ抽象的な行動方針です。",
+      "出力は以下のキーを持つJsonとしてください。",
+      '{ "appliesWhen": string, "recommendedBehavior": string, "avoidBehavior": Option<string>}',
+      "各フィールドは以下です。",
+      "- appliesWhen",
       "recommendedBehaviorを選ぶために必要な条件だけを含めてください。",
       "固有名詞や特定の製品名、書籍名、技術名は、それ自体が行動選択に不可欠でない限り一般化してください。",
       "単なる話題の共通点ではなく、actionが有効になる理由となる共通条件を抽出してください。",
-      "## recommendedBehavior",
+      "- recommendedBehavior",
       "Agentが将来再利用できる具体的な応答戦略を記述してください。特定Episodeで回答した内容ではなく、回答を生成する手順や方針です。",
-      "## avoidBehavior",
+      "- avoidBehavior",
       "Episodeに失敗や否定的反応がある場合だけ、避けるべき応答を記述してください。",
       "",
       "JSON のみを返してください。",
@@ -69,10 +71,7 @@ export const buildPolicyHypothesisFromEpisodes = async (
   };
 };
 
-const requireText = (
-  value: string | string[],
-  fieldName: string,
-): string => {
+const requireText = (value: string | string[], fieldName: string): string => {
   const normalized = normalizeText(value);
   if (!normalized) {
     throw new Error(
