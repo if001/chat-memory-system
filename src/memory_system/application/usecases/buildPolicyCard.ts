@@ -1,12 +1,21 @@
 import { EpisodeCase, PolicyHypothesis } from "../../domain/types";
-import { JsonGeneratingClient } from "../../infrastructure/ollama/fileCachedClient";
+import { JsonGeneratingClient } from "../../ports/jsonGeneratingClient";
 import { episodesForLlm } from "./llmPayloads";
+import { z } from "zod";
 
 interface BuildPolicyHypothesisResult {
-  appliesWhen: string;
-  recommendedBehavior: string;
-  avoidBehavior?: string;
+  appliesWhen: string | string[];
+  recommendedBehavior: string | string[];
+  avoidBehavior?: string | string[];
 }
+
+const textOrTextArraySchema = z.union([z.string(), z.array(z.string())]);
+const buildPolicyHypothesisResultSchema: z.ZodType<BuildPolicyHypothesisResult> =
+  z.object({
+    appliesWhen: textOrTextArraySchema,
+    recommendedBehavior: textOrTextArraySchema,
+    avoidBehavior: textOrTextArraySchema.optional(),
+  });
 
 export const buildPolicyHypothesisFromEpisodes = async (
   llm: JsonGeneratingClient,
@@ -16,7 +25,8 @@ export const buildPolicyHypothesisFromEpisodes = async (
     throw new Error("buildPolicyHypothesisFromEpisodes requires episodes");
   }
   console.log("[buildPolicyHypothesisFromEpisodes]: call llm");
-  const parsed = await llm.generateJson<BuildPolicyHypothesisResult>(
+  const parsed = await llm.generateJson(
+    buildPolicyHypothesisResultSchema,
     [
       "あなたは、ユーザーと対話するAgentの行動方針を抽出するPolicy分析器です。",
       "入力として、同一のPolicyにまとめられる可能性がある複数のEpisodeが与えられます。",
@@ -43,13 +53,13 @@ export const buildPolicyHypothesisFromEpisodes = async (
       episodes: episodesForLlm(episodes),
     }),
   );
-
+  console.log("[buildPolicyHypothesisFromEpisodes] :parsed", parsed);
   const appliesWhen = requireText(parsed.appliesWhen, "appliesWhen");
   const recommendedBehavior = requireText(
     parsed.recommendedBehavior,
     "recommendedBehavior",
   );
-  const avoidBehavior = parsed.avoidBehavior?.trim();
+  const avoidBehavior = normalizeText(parsed.avoidBehavior);
 
   return {
     appliesWhen,
@@ -59,8 +69,11 @@ export const buildPolicyHypothesisFromEpisodes = async (
   };
 };
 
-const requireText = (value: string, fieldName: string): string => {
-  const normalized = value?.trim();
+const requireText = (
+  value: string | string[],
+  fieldName: string,
+): string => {
+  const normalized = normalizeText(value);
   if (!normalized) {
     throw new Error(
       `buildPolicyHypothesisFromEpisodes returned empty ${fieldName}`,
@@ -68,3 +81,9 @@ const requireText = (value: string, fieldName: string): string => {
   }
   return normalized;
 };
+
+const normalizeText = (value: string | string[] | undefined): string =>
+  (Array.isArray(value) ? value : value === undefined ? [] : [value])
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join("\n");

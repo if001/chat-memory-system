@@ -17,14 +17,19 @@ import {
   PolicyCard,
   TurnRecord,
 } from "../src/memory_system/domain/types";
+import { z } from "zod";
 
 class JsonClientStub {
   readonly calls: Array<{ systemPrompt?: string; userPrompt?: string }> = [];
   constructor(private readonly queue: unknown[]) {}
-  async generateJson<T>(systemPrompt?: string, userPrompt?: string): Promise<T> {
+  async generateJson<T>(
+    schema: z.ZodType<T>,
+    systemPrompt?: string,
+    userPrompt?: string,
+  ): Promise<T> {
     this.calls.push({ systemPrompt, userPrompt });
     if (this.queue.length === 0) throw new Error("stub queue is empty");
-    return this.queue.shift() as T;
+    return schema.parse(this.queue.shift());
   }
 }
 
@@ -356,6 +361,25 @@ test("buildPolicyHypothesisFromEpisodes produces only procedural policy fields",
     episodeIds: ["ep-1", "ep-2"],
   });
   assert.doesNotMatch(JSON.stringify(result), /profile|interest|outcome/);
+});
+
+test("buildPolicyHypothesisFromEpisodes normalizes string arrays", async () => {
+  const llm = new JsonClientStub([{
+    appliesWhen: [" User compares options. ", " Constraints are explicit. "],
+    recommendedBehavior: [" Compare tradeoffs. ", " Confirm constraints. "],
+    avoidBehavior: [" Guess silently. ", " Choose without evidence. "],
+  }]);
+
+  const result = await buildPolicyHypothesisFromEpisodes(llm, [
+    buildEpisode("ep-1"),
+  ]);
+
+  assert.deepEqual(result, {
+    appliesWhen: "User compares options.\nConstraints are explicit.",
+    recommendedBehavior: "Compare tradeoffs.\nConfirm constraints.",
+    avoidBehavior: "Guess silently.\nChoose without evidence.",
+    episodeIds: ["ep-1"],
+  });
 });
 
 test("updatePolicyCardFromEpisode does not merge a different recommended behavior", async () => {

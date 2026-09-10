@@ -4,13 +4,19 @@ import {
   PolicyCard,
   PolicyHypothesis,
 } from "../../domain/types";
-import { JsonGeneratingClient } from "../../infrastructure/ollama/fileCachedClient";
+import { JsonGeneratingClient } from "../../ports/jsonGeneratingClient";
 import { episodeForLlm, policyCardsForLlm } from "./llmPayloads";
+import { z } from "zod";
 
 interface UpdateDecision {
   decision?: "merge" | "create";
   targetPolicyCardId?: string;
 }
+
+const updateDecisionSchema: z.ZodType<UpdateDecision> = z.object({
+  decision: z.enum(["merge", "create"]).optional(),
+  targetPolicyCardId: z.string().optional(),
+});
 
 export const updatePolicyCardFromEpisode = async (input: {
   llm: JsonGeneratingClient;
@@ -49,7 +55,8 @@ const selectMergeTarget = async (input: {
   if (input.existingCards.length === 0) {
     return null;
   }
-  const decision = await input.llm.generateJson<UpdateDecision>(
+  const decision = await input.llm.generateJson(
+    updateDecisionSchema,
     [
       "あなたは procedural memory の更新判定器です。",
       "新しいEpisodeと同じ適用条件かつ同じ推奨行動のPolicyCardだけをmergeしてください。",

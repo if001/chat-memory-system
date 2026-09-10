@@ -12,6 +12,8 @@ import {
 } from "../src/memory_system/domain/types";
 import { buildTurnRecordId } from "../src/memory_system/domain/identifiers";
 import { MemoryRepository } from "../src/memory_system/infrastructure/postgres/repository";
+import { JsonGeneratingClient } from "../src/memory_system/infrastructure/ollama/fileCachedClient";
+import { z } from "zod";
 
 const postgresUrl = process.env.MEMORY_SYSTEM_TEST_POSTGRES_URL;
 
@@ -410,20 +412,22 @@ const createTestService = (connectionString: string): MemorySystemService => {
     chunkSizeTurns: 4,
     chunkOverlapTurns: 1,
   }) as MemorySystemService & {
-    llm: {
-      generateJson<T>(systemPrompt?: string, userPrompt?: string): Promise<T>;
-    };
+    llm: JsonGeneratingClient;
     repository: MemoryRepository;
   };
 
   service.llm = {
-    async generateJson<T>(_systemPrompt?: string, userPrompt?: string): Promise<T> {
+    async generateJson<T>(
+      schema: z.ZodType<T>,
+      _systemPrompt?: string,
+      userPrompt?: string,
+    ): Promise<T> {
       const payload = JSON.parse(userPrompt ?? "{}") as {
         chunkText?: string;
         policyCards?: Array<{ id: string }>;
       };
       if (payload.chunkText) {
-        return {
+        return schema.parse({
         episodes: [
           {
             state: "User compares webhook and polling.",
@@ -436,19 +440,19 @@ const createTestService = (connectionString: string): MemorySystemService => {
             outcome: "Operational constraints become clear.",
           },
         ],
-        } as T;
+        });
       }
       if (payload.policyCards && payload.policyCards.length > 0) {
-        return {
+        return schema.parse({
           decision: "merge",
           targetPolicyCardId: payload.policyCards[0]?.id,
-        } as T;
+        });
       }
-      return {
+      return schema.parse({
         appliesWhen: "User needs integration rollout guidance.",
         recommendedBehavior:
           "Compare concrete rollout options and operational tradeoffs.",
-      } as T;
+      });
     },
   };
 

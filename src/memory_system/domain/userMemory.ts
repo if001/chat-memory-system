@@ -1,6 +1,5 @@
-interface JsonGeneratingClient {
-  generateJson<T>(systemPrompt: string, userPrompt: string): Promise<T>;
-}
+import { JsonGeneratingClient } from "../ports/jsonGeneratingClient";
+import { z } from "zod";
 
 export interface UserNote {
   id: number;
@@ -49,6 +48,14 @@ interface RawUserMemoryWriteDecision {
   reason?: string;
 }
 
+const rawUserMemoryWriteDecisionSchema: z.ZodType<RawUserMemoryWriteDecision> =
+  z.object({
+    destination: z.string().optional(),
+    action: z.string().optional(),
+    targetNoteId: z.number().optional(),
+    reason: z.string().optional(),
+  });
+
 export const decideUserMemoryWrite = async (
   llm: JsonGeneratingClient,
   input: {
@@ -57,7 +64,8 @@ export const decideUserMemoryWrite = async (
     explicitTargetNoteId?: number;
   },
 ): Promise<UserMemoryWriteDecision | null> => {
-  const parsed = await llm.generateJson<RawUserMemoryWriteDecision>(
+  const parsed = await llm.generateJson(
+    rawUserMemoryWriteDecisionSchema,
     [
       "You decide how to handle one explicit memory write request.",
       "First choose exactly one destination: user_memory, daily_event, topic_state, or reject.",

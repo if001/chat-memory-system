@@ -7,3 +7,4 @@ export * from "./memory_system/api/backgroundRunner";
 export * from "./memory_system/api/turnRecordReader";
 export * from "./memory_system/application/usecases/classifyTurnMemoryCandidates";
 export * from "./memory_system/infrastructure/ollama/fileCachedClient";
+export * from "./memory_system/ports/jsonGeneratingClient";

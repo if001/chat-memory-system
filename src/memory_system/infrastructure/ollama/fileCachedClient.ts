@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { z } from "zod";
+import { JsonGeneratingClient } from "../../ports/jsonGeneratingClient";
 
-export interface JsonGeneratingClient {
-  generateJson<T>(systemPrompt: string, userPrompt: string): Promise<T>;
-}
+export type { JsonGeneratingClient } from "../../ports/jsonGeneratingClient";
 
 export interface FileCachedJsonClientOptions {
   cacheDir: string;
@@ -16,21 +16,32 @@ interface CachedValueEnvelope {
   value: unknown;
 }
 
+const cachedValueEnvelopeSchema = z.object({
+  createdAtIso: z.string(),
+  value: z.unknown(),
+});
+
 export const createFileCachedJsonClient = <TClient extends JsonGeneratingClient>(
   inner: TClient,
   options: FileCachedJsonClientOptions,
 ): JsonGeneratingClient => ({
-  async generateJson<T>(systemPrompt: string, userPrompt: string): Promise<T> {
+  async generateJson<T>(
+    schema: z.ZodType<T>,
+    systemPrompt: string,
+    userPrompt: string,
+  ): Promise<T> {
     const cachePath = join(
       options.cacheDir,
-      `${buildCacheKey(systemPrompt, userPrompt)}.json`,
+      `${buildCacheKey(schema, systemPrompt, userPrompt)}.json`,
     );
-    const cached = await readCachedValue<T>(cachePath, options.ttlMs);
+    const cached = await readCachedValue(cachePath, schema, options.ttlMs);
     if (cached.hit) {
       return cached.value;
     }
 
-    const value = await inner.generateJson<T>(systemPrompt, userPrompt);
+    const value = schema.parse(
+      await inner.generateJson(schema, systemPrompt, userPrompt),
+    );
     await mkdir(options.cacheDir, { recursive: true });
     await writeFile(
       cachePath,
@@ -48,8 +59,14 @@ export const createFileCachedJsonClient = <TClient extends JsonGeneratingClient>
   },
 });
 
-const buildCacheKey = (systemPrompt: string, userPrompt: string): string =>
+const buildCacheKey = (
+  schema: z.ZodType,
+  systemPrompt: string,
+  userPrompt: string,
+): string =>
   createHash("sha256")
+    .update(JSON.stringify(z.toJSONSchema(schema)))
+    .update("\n---\n")
     .update(systemPrompt)
     .update("\n---\n")
     .update(userPrompt)
@@ -57,18 +74,20 @@ const buildCacheKey = (systemPrompt: string, userPrompt: string): string =>
 
 const readCachedValue = async <T>(
   cachePath: string,
+  schema: z.ZodType<T>,
   ttlMs?: number,
 ): Promise<{ hit: true; value: T } | { hit: false }> => {
   try {
     const raw = await readFile(cachePath, "utf8");
-    const parsed = JSON.parse(raw) as CachedValueEnvelope;
+    const parsed = cachedValueEnvelopeSchema.parse(JSON.parse(raw));
     if (ttlMs && ttlMs > 0) {
       const createdAt = Date.parse(parsed.createdAtIso);
       if (!Number.isFinite(createdAt) || Date.now() - createdAt > ttlMs) {
         return { hit: false };
       }
     }
-    return { hit: true, value: parsed.value as T };
+    const value = schema.safeParse(parsed.value);
+    return value.success ? { hit: true, value: value.data } : { hit: false };
   } catch {
     return { hit: false };
   }

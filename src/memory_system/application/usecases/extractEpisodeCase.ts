@@ -1,7 +1,8 @@
 import { ConversationChunk, EpisodeCase, TurnRecord } from "../../domain/types";
 import { buildEpisodeId, ensureTurnRecordId } from "../../domain/identifiers";
-import { JsonGeneratingClient } from "../../infrastructure/ollama/fileCachedClient";
+import { JsonGeneratingClient } from "../../ports/jsonGeneratingClient";
 import { conversationChunkForLlm, turnRecordForLlm } from "./llmPayloads";
+import { z } from "zod";
 
 interface ExtractEpisodeResult {
   episodes?: Array<{
@@ -13,6 +14,19 @@ interface ExtractEpisodeResult {
   action?: string;
   outcome?: string;
 }
+
+const episodeFieldsSchema = z.object({
+  state: z.string(),
+  action: z.string(),
+  outcome: z.string(),
+});
+
+const extractEpisodeResultSchema: z.ZodType<ExtractEpisodeResult> = z.object({
+  episodes: z.array(episodeFieldsSchema).optional(),
+  state: z.string().optional(),
+  action: z.string().optional(),
+  outcome: z.string().optional(),
+});
 
 export const extractEpisodeCase = async (
   llm: JsonGeneratingClient,
@@ -76,7 +90,8 @@ const extractEpisodeCasesFromConversationSource = async (
   conversation: TurnRecord | Record<string, unknown>,
   embedText?: (text: string) => Promise<number[]>,
 ): Promise<EpisodeCase[]> => {
-  const parsed = await llm.generateJson<ExtractEpisodeResult>(
+  const parsed = await llm.generateJson(
+    extractEpisodeResultSchema,
     [
       "あなたは、ユーザーと対話するAgentの行動方針を抽出するEpisode抽出器です。",
       "会話から、Episode を 1件もしくは1件以上抽出してください。",

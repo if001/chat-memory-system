@@ -21,8 +21,8 @@ import {
 import { OllamaClient } from "../infrastructure/ollama/client";
 import {
   createFileCachedJsonClient,
-  JsonGeneratingClient,
 } from "../infrastructure/ollama/fileCachedClient";
+import { JsonGeneratingClient } from "../ports/jsonGeneratingClient";
 import { MemoryRepository } from "../infrastructure/postgres/repository";
 import type {
   MemoryCatalog,

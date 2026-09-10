@@ -4,6 +4,7 @@ import {
   classifyTurnMemoryCandidates,
   TurnRecord,
 } from "../src";
+import { z } from "zod";
 
 const turn = (kind: TurnRecord["kind"] = "human"): TurnRecord => ({
   id: "turn-1",
@@ -29,9 +30,9 @@ test("classifies durable facts and dated events from human messages only", async
   let payload = "";
   const candidates = await classifyTurnMemoryCandidates(
     {
-      generateJson: async (_systemPrompt, userPrompt) => {
+      generateJson: async (schema, _systemPrompt, userPrompt) => {
         payload = userPrompt;
-        return {
+        return schema.parse({
           candidates: [
             { kind: "user_memory", note: "  Prefers   jazz " },
             {
@@ -42,7 +43,7 @@ test("classifies durable facts and dated events from human messages only", async
             { kind: "daily_event", eventDate: "not-a-date", summary: "bad" },
             { kind: "none", note: "temporary" },
           ],
-        };
+        });
       },
     },
     turn(),
@@ -65,9 +66,9 @@ test.each(["proactive", "delegation"] as const)(
     let calls = 0;
     const candidates = await classifyTurnMemoryCandidates(
       {
-        generateJson: async () => {
+        generateJson: async (schema) => {
           calls += 1;
-          return { candidates: [] };
+          return schema.parse({ candidates: [] });
         },
       },
       turn(kind),
@@ -79,12 +80,13 @@ test.each(["proactive", "delegation"] as const)(
 
 test("normalization makes repeated classification output deterministic", async () => {
   const model = {
-    generateJson: async () => ({
-      candidates: [
-        { kind: "user_memory", note: "Prefers jazz" },
-        { kind: "user_memory", note: "Prefers jazz" },
-      ],
-    }),
+    generateJson: async <T>(schema: z.ZodType<T>): Promise<T> =>
+      schema.parse({
+        candidates: [
+          { kind: "user_memory", note: "Prefers jazz" },
+          { kind: "user_memory", note: "Prefers jazz" },
+        ],
+      }),
   };
   assert.deepEqual(
     await classifyTurnMemoryCandidates(model, turn()),

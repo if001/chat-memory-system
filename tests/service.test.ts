@@ -15,6 +15,8 @@ import { DailyEvent } from "../src/memory_system/domain/dailyEvent";
 import { TurnSearchIndexEntry } from "../src/memory_system/application/usecases/turnSearchIndex";
 import { TurnRecordSearchRequest } from "../src/memory_system/api/contracts";
 import { UserMemorySearchIndexEntry } from "../src/memory_system/application/usecases/userMemorySearch";
+import { JsonGeneratingClient } from "../src/memory_system/infrastructure/ollama/fileCachedClient";
+import { z } from "zod";
 
 type RepositoryStub = {
   saveTurnRecord(input: TurnRecord): Promise<void>;
@@ -81,7 +83,7 @@ type RepositoryStub = {
 };
 
 type StubbedService = MemorySystemService & {
-  llm: { generateJson<T>(): Promise<T> };
+  llm: JsonGeneratingClient;
   repository: RepositoryStub;
   embedText?: (text: string) => Promise<number[]>;
 };
@@ -174,21 +176,21 @@ test("buildOrUpdatePolicyCards creates then updates one card with traceable epis
       },
     ],
   );
-  service.llm.generateJson = async <T>(): Promise<T> => {
+  service.llm.generateJson = async <T>(schema: z.ZodType<T>): Promise<T> => {
     llmCalls += 1;
     if (llmCalls === 1) {
-      return {
+      return schema.parse({
         appliesWhen: "User needs rollout guidance.",
         recommendedBehavior: "Compare rollout options and constraints.",
-      } as T;
+      });
     }
     if (llmCalls === 2) {
-      return { decision: "merge", targetPolicyCardId: cards[0]?.id } as T;
+      return schema.parse({ decision: "merge", targetPolicyCardId: cards[0]?.id });
     }
-    return {
+    return schema.parse({
       appliesWhen: "User needs rollout guidance.",
       recommendedBehavior: "Compare rollout options and constraints.",
-    } as T;
+    });
   };
 
   const result = await service.buildOrUpdatePolicyCards("ao", 10);
@@ -912,11 +914,11 @@ const createStubbedService = (
     embeddingProvider,
   }) as StubbedService;
   service.llm = {
-    async generateJson<T>(): Promise<T> {
+    async generateJson<T>(schema: z.ZodType<T>): Promise<T> {
       if (responses.length === 0) {
         throw new Error("stub llm queue is empty");
       }
-      return responses.shift() as T;
+      return schema.parse(responses.shift());
     },
   };
   service.repository = {

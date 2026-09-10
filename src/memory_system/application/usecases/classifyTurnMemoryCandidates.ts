@@ -1,8 +1,6 @@
 import type { TurnRecord } from "../../domain/types";
-
-interface JsonGeneratingClient {
-  generateJson<T>(systemPrompt: string, userPrompt: string): Promise<T>;
-}
+import { JsonGeneratingClient } from "../../ports/jsonGeneratingClient";
+import { z } from "zod";
 
 export type TurnMemoryCandidate =
   | { kind: "user_memory"; note: string }
@@ -15,6 +13,19 @@ interface RawCandidate {
   summary?: string;
 }
 
+const rawCandidateSchema: z.ZodType<RawCandidate> = z.object({
+  kind: z.string().optional(),
+  note: z.string().optional(),
+  eventDate: z.string().optional(),
+  summary: z.string().optional(),
+});
+
+const turnMemoryCandidatesResponseSchema = z
+  .object({
+    candidates: z.array(rawCandidateSchema).optional(),
+  })
+  .nullable();
+
 export const classifyTurnMemoryCandidates = async (
   llm: JsonGeneratingClient,
   turn: TurnRecord,
@@ -26,9 +37,8 @@ export const classifyTurnMemoryCandidates = async (
     .filter(Boolean);
   if (userMessages.length === 0) return [];
 
-  const response = await llm.generateJson<{
-    candidates?: RawCandidate[];
-  } | null>(
+  const response = await llm.generateJson(
+    turnMemoryCandidatesResponseSchema,
     [
       "Extract durable user memory candidates from the supplied human messages.",
       "Return JSON with a candidates array.",

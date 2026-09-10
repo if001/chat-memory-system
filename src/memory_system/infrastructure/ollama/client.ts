@@ -1,15 +1,18 @@
+import { z } from "zod";
+import { JsonGeneratingClient } from "../../ports/jsonGeneratingClient";
+
 interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
 }
 
-interface OllamaChatResponse {
-  message?: {
-    content?: string;
-  };
-}
+const ollamaChatResponseSchema = z.object({
+  message: z.object({
+    content: z.string(),
+  }),
+});
 
-export class OllamaClient {
+export class OllamaClient implements JsonGeneratingClient {
   constructor(
     private readonly baseUrl: string,
     private readonly model: string,
@@ -17,7 +20,11 @@ export class OllamaClient {
     private readonly fetchFn: typeof fetch = fetch,
   ) {}
 
-  async generateJson<T>(systemPrompt: string, userPrompt: string): Promise<T> {
+  async generateJson<T>(
+    schema: z.ZodType<T>,
+    systemPrompt: string,
+    userPrompt: string,
+  ): Promise<T> {
     const response = await this.fetchFn(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: {
@@ -30,7 +37,7 @@ export class OllamaClient {
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ] satisfies ChatMessage[],
-        format: "json",
+        format: z.toJSONSchema(schema),
         stream: false,
       }),
     });
@@ -44,20 +51,21 @@ export class OllamaClient {
       );
       throw new Error(`ollama chat request failed: ${response.status}, ${detail}`);
     }
-    const data = (await response.json()) as OllamaChatResponse;
-    const raw = data.message?.content ?? "{}";
-    return parseJsonResponse<T>(raw);
+    const data = ollamaChatResponseSchema.parse(await response.json());
+    return parseJsonResponse(data.message.content, schema);
   }
 }
 
-const parseJsonResponse = <T>(raw: string): T => {
+const parseJsonResponse = <T>(raw: string, schema: z.ZodType<T>): T => {
   const normalized = unwrapJsonFence(raw.trim());
+  let parsed: unknown;
   try {
-    return JSON.parse(normalized) as T;
+    parsed = JSON.parse(normalized);
   } catch {
     const extracted = extractJsonCandidate(normalized);
-    return JSON.parse(extracted) as T;
+    parsed = JSON.parse(extracted);
   }
+  return schema.parse(parsed);
 };
 
 const unwrapJsonFence = (value: string): string => {

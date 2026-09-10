@@ -1,6 +1,9 @@
 import { PolicyCard } from "../../domain/types";
-import { JsonGeneratingClient } from "../../infrastructure/ollama/fileCachedClient";
+import { JsonGeneratingClient } from "../../ports/jsonGeneratingClient";
 import { policyCardsForLlm } from "./llmPayloads";
+import { z } from "zod";
+
+const applicablePolicyCardIdsSchema = z.array(z.string());
 
 export const filterApplicablePolicyCards = async (
   llm: JsonGeneratingClient,
@@ -22,7 +25,8 @@ export const filterApplicablePolicyCards = async (
     currentContext,
     policyCards: policyCardsForLlm(cards),
   });
-  const parsed = await llm.generateJson<string[]>(
+  const parsed = await llm.generateJson(
+    applicablePolicyCardIdsSchema,
     systemPrompt,
     userPrompt,
   );
