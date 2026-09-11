@@ -81,14 +81,10 @@ integrationTest(
       );
       await repository.upsertUserMemorySearchIndex({
         noteId: indexed.id,
-        userId,
-        note: indexed.note,
         embedding: embedding768(1),
       });
       await repository.upsertUserMemorySearchIndex({
         noteId: other.id,
-        userId: otherUserId,
-        note: other.note,
         embedding: embedding768(1),
       });
 
@@ -516,10 +512,6 @@ const cleanupBot = async (botId: string): Promise<void> => {
 const cleanupUser = async (userId: string): Promise<void> => {
   const pool = new Pool({ connectionString: postgresUrl });
   try {
-    await pool.query(
-      "DELETE FROM app.memory_user_note_search_index WHERE user_id = $1",
-      [userId],
-    );
     await pool.query("DELETE FROM user_notes WHERE user_id = $1", [userId]);
   } finally {
     await pool.end();

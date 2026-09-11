@@ -21,20 +21,6 @@ import {
 
 const appSchema = pgSchema("app");
 
-export const memoryUserNoteSearchIndexTable = appSchema.table(
-  "memory_user_note_search_index",
-  {
-    noteId: bigint("note_id", { mode: "number" }).primaryKey(),
-    userId: text("user_id").notNull(),
-    note: text("note").notNull(),
-    embedding: vector("embedding", { dimensions: 768 }).notNull(),
-    indexedAt: timestamp("indexed_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-  },
-  (table) => [index("memory_user_note_search_user_idx").on(table.userId)],
-);
-
 export const userNotesTable = pgTable(
   "user_notes",
   {
@@ -51,6 +37,19 @@ export const userNotesTable = pgTable(
       sql`regexp_replace(lower(trim(${table.note})), '[[:space:]。、,.!！?？]+', ' ', 'g')`,
     ),
   ],
+);
+
+export const memoryUserNoteSearchIndexTable = appSchema.table(
+  "memory_user_note_search_index",
+  {
+    noteId: bigint("note_id", { mode: "number" })
+      .primaryKey()
+      .references(() => userNotesTable.id, { onDelete: "cascade" }),
+    embedding: vector("embedding", { dimensions: 768 }).notNull(),
+    indexedAt: timestamp("indexed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
 );
 
 export const dailyEventsTable = pgTable("daily_events", {
@@ -71,7 +70,9 @@ export const memoryTurnRecordsTable = appSchema.table("memory_turn_records", {
   threadId: text("thread_id").notNull(),
   kind: text("kind").$type<TurnRecord["kind"]>().notNull(),
   sourceInteractionId: text("source_interaction_id"),
-  messagesJson: jsonb("messages_json").$type<TurnRecord["messages"]>().notNull(),
+  messagesJson: jsonb("messages_json")
+    .$type<TurnRecord["messages"]>()
+    .notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
 });
 

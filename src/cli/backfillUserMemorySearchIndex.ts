@@ -49,13 +49,11 @@ const main = async (): Promise<void> => {
       if (pending.length === 0) break;
 
       let indexedInBatch = 0;
-      for (const { userId, note } of pending) {
+      for (const { note } of pending) {
         try {
           const embedding = await embeddingClient.embed(note.note);
           await repository.upsertUserMemorySearchIndex({
             noteId: note.id,
-            userId,
-            note: note.note,
             embedding,
           });
           indexedInBatch += 1;

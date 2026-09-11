@@ -687,12 +687,10 @@ class DefaultMemorySystemService implements MemorySystemService {
     userId: string;
     noteId: number;
   }): Promise<boolean> {
-    const deleted = await this.repository.deleteUserNote(
+    return this.repository.deleteUserNote(
       input.userId,
       input.noteId,
     );
-    if (deleted) await this.deleteUserMemorySearchIndexBestEffort(input.noteId);
-    return deleted;
   }
 
   async backfillUserMemorySearchIndex(
@@ -704,7 +702,7 @@ class DefaultMemorySystemService implements MemorySystemService {
     let indexed = 0;
     for (const note of notes) {
       try {
-        await this.indexUserNote(userId, note);
+        await this.indexUserNote(note);
         indexed += 1;
       } catch {
         // The canonical note remains available and unindexed for a later retry.
@@ -750,7 +748,7 @@ class DefaultMemorySystemService implements MemorySystemService {
     }
     if (decision.action === "create") {
       const note = await this.repository.rememberUserNote(userId, proposedNote);
-      await this.indexUserNoteBestEffort(userId, note);
+      await this.indexUserNoteBestEffort(note);
       return {
         ok: true,
         action: decision.action,
@@ -765,7 +763,7 @@ class DefaultMemorySystemService implements MemorySystemService {
       return { ok: false, error: "UserMemory write target was not found." };
     }
     if (decision.action === "keep_existing") {
-      await this.indexUserNoteBestEffort(userId, target);
+      await this.indexUserNoteBestEffort(target);
       return {
         ok: true,
         action: decision.action,
@@ -780,7 +778,7 @@ class DefaultMemorySystemService implements MemorySystemService {
         proposedNote,
       );
       await this.deleteUserMemorySearchIndexBestEffort(target.id);
-      if (note) await this.indexUserNoteBestEffort(userId, note);
+      if (note) await this.indexUserNoteBestEffort(note);
       return {
         ok: note !== null,
         action: decision.action,
@@ -789,7 +787,6 @@ class DefaultMemorySystemService implements MemorySystemService {
       };
     }
     const deleted = await this.repository.deleteUserNote(userId, target.id);
-    if (deleted) await this.deleteUserMemorySearchIndexBestEffort(target.id);
     return {
       ok: deleted,
       action: decision.action,
@@ -820,23 +817,18 @@ class DefaultMemorySystemService implements MemorySystemService {
     }
   }
 
-  private async indexUserNote(userId: string, note: UserNote): Promise<void> {
+  private async indexUserNote(note: UserNote): Promise<void> {
     if (!this.embedText) return;
     const embedding = requireEmbedding(await this.embedText(note.note));
     await this.repository.upsertUserMemorySearchIndex({
       noteId: note.id,
-      userId,
-      note: note.note,
       embedding,
     });
   }
 
-  private async indexUserNoteBestEffort(
-    userId: string,
-    note: UserNote,
-  ): Promise<void> {
+  private async indexUserNoteBestEffort(note: UserNote): Promise<void> {
     try {
-      await this.indexUserNote(userId, note);
+      await this.indexUserNote(note);
     } catch {
       // Search indexing is rebuildable and must not make the canonical write fail.
     }

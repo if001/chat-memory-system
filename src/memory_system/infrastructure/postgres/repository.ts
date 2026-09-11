@@ -24,7 +24,10 @@ import {
 } from "../../domain/types";
 import { ensureTurnRecordId } from "../../domain/identifiers";
 import { UserNote } from "../../domain/userMemory";
-import { UserMemorySearchIndexEntry } from "../../application/usecases/userMemorySearch";
+import {
+  UserMemorySearchCandidate,
+  UserMemorySearchIndexEntry,
+} from "../../application/usecases/userMemorySearch";
 import {
   DailyEvent,
   GetDailyEventsByDateInput,
@@ -233,8 +236,6 @@ export class MemoryRepository {
   ): Promise<void> {
     const values = {
       noteId: entry.noteId,
-      userId: entry.userId,
-      note: entry.note,
       embedding: entry.embedding,
       indexedAt: new Date(),
     };
@@ -257,32 +258,30 @@ export class MemoryRepository {
     userId: string,
     queryEmbedding: number[],
     limit: number,
-  ): Promise<Array<UserMemorySearchIndexEntry & { createdAt: Date }>> {
+  ): Promise<UserMemorySearchCandidate[]> {
     const distance = cosineDistance(
       memoryUserNoteSearchIndexTable.embedding,
       queryEmbedding,
     );
     const rows = await this.db
       .select({
-        index: memoryUserNoteSearchIndexTable,
+        noteId: memoryUserNoteSearchIndexTable.noteId,
+        embedding: memoryUserNoteSearchIndexTable.embedding,
+        note: userNotesTable.note,
         createdAt: userNotesTable.createdAt,
       })
       .from(memoryUserNoteSearchIndexTable)
       .innerJoin(
         userNotesTable,
-        and(
-          eq(userNotesTable.id, memoryUserNoteSearchIndexTable.noteId),
-          eq(userNotesTable.userId, memoryUserNoteSearchIndexTable.userId),
-        ),
+        eq(userNotesTable.id, memoryUserNoteSearchIndexTable.noteId),
       )
-      .where(eq(memoryUserNoteSearchIndexTable.userId, userId))
+      .where(eq(userNotesTable.userId, userId))
       .orderBy(distance)
       .limit(limit);
     return rows.map((row) => ({
-      noteId: row.index.noteId,
-      userId: row.index.userId,
-      note: row.index.note,
-      embedding: row.index.embedding,
+      noteId: row.noteId,
+      note: row.note,
+      embedding: row.embedding,
       createdAt: new Date(row.createdAt),
     }));
   }

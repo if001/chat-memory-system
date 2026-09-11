@@ -14,7 +14,10 @@ import { UserNote } from "../src/memory_system/domain/userMemory";
 import { DailyEvent } from "../src/memory_system/domain/dailyEvent";
 import { TurnSearchIndexEntry } from "../src/memory_system/application/usecases/turnSearchIndex";
 import { TurnRecordSearchRequest } from "../src/memory_system/api/contracts";
-import { UserMemorySearchIndexEntry } from "../src/memory_system/application/usecases/userMemorySearch";
+import {
+  UserMemorySearchCandidate,
+  UserMemorySearchIndexEntry,
+} from "../src/memory_system/application/usecases/userMemorySearch";
 import { JsonGeneratingClient } from "../src/memory_system/infrastructure/ollama/fileCachedClient";
 import { z } from "zod";
 
@@ -51,7 +54,7 @@ type RepositoryStub = {
     userId: string,
     queryEmbedding: number[],
     limit: number,
-  ): Promise<Array<UserMemorySearchIndexEntry & { createdAt: Date }>>;
+  ): Promise<UserMemorySearchCandidate[]>;
   fetchUnindexedUserNotes(userId: string, limit: number): Promise<UserNote[]>;
   rememberDailyEvent(input: {
     userId: string;
@@ -350,14 +353,12 @@ test("search ranks semantic UserMemory matches and does not expose scores", asyn
         return [
           {
             noteId: 1,
-            userId,
             note: "I enjoy improvisational jazz",
             embedding: [1, 0],
             createdAt: new Date("2026-09-09T00:00:00.000Z"),
           },
           {
             noteId: 2,
-            userId,
             note: "My preferred editor theme is dark",
             embedding: [0, 1],
             createdAt: new Date("2026-09-09T00:01:00.000Z"),
@@ -465,8 +466,6 @@ test("UserMemory create indexes the canonical note immediately", async () => {
   assert.deepEqual(indexed, [
     {
       noteId: 7,
-      userId: "shared-user",
-      note: "I like mystery novels",
       embedding: [0.5, 0.5],
     },
   ]);
@@ -510,12 +509,10 @@ test("replace and delete update the UserMemory search index", async () => {
   });
   await service.deleteUserNote({ userId: "shared-user", noteId: 3 });
 
-  assert.deepEqual(deletedIndexIds, [3, 3]);
+  assert.deepEqual(deletedIndexIds, [3]);
   assert.deepEqual(indexed, [
     {
       noteId: 3,
-      userId: "shared-user",
-      note: "Prefer detailed answers",
       embedding: [0.5, 0.5],
     },
   ]);

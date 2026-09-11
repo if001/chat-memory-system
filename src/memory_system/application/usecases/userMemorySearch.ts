@@ -2,9 +2,12 @@ import { UserNote } from "../../domain/userMemory";
 
 export interface UserMemorySearchIndexEntry {
   noteId: number;
-  userId: string;
-  note: string;
   embedding: number[];
+}
+
+export interface UserMemorySearchCandidate extends UserMemorySearchIndexEntry {
+  note: string;
+  createdAt: Date;
 }
 
 export interface RankedUserMemory extends UserNote {
@@ -14,7 +17,7 @@ export interface RankedUserMemory extends UserNote {
 export const rankUserMemory = (
   query: string,
   queryEmbedding: number[],
-  candidates: Array<UserMemorySearchIndexEntry & { createdAt: Date }>,
+  candidates: UserMemorySearchCandidate[],
 ): RankedUserMemory[] =>
   candidates
     .map((candidate) => ({
