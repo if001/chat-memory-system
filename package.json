@@ -14,6 +14,7 @@
     "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run tests/postgres.integration.test.ts",
     "start:background": "tsx --env-file=.env.ao src/cli/runBackground.ts",
+    "backfill:user-memory": "tsx --env-file=.env.db_migration src/cli/backfillUserMemorySearchIndex.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },
