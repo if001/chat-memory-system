@@ -49,6 +49,7 @@ type RepositoryStub = {
   deleteUserMemorySearchIndex(noteId: number): Promise<void>;
   fetchUserMemorySearchCandidates(
     userId: string,
+    queryEmbedding: number[],
     limit: number,
   ): Promise<Array<UserMemorySearchIndexEntry & { createdAt: Date }>>;
   fetchUnindexedUserNotes(userId: string, limit: number): Promise<UserNote[]>;
@@ -329,7 +330,12 @@ test("replaceUserNote removes the old correction target from subsequent searches
 
   assert.equal(result.ok, true);
   assert.deepEqual(
-    (await service.searchUserNotes({ userId: "shared-user", query: "" })).map(
+    (
+      await service.findUserNotesForManagement({
+        userId: "shared-user",
+        query: "",
+      })
+    ).map(
       (item) => item.note,
     ),
     ["Prefer detailed answers"],
@@ -433,6 +439,39 @@ test("UserMemory create keeps the canonical write when indexing fails", async ()
   assert.equal(writes, 1);
 });
 
+test("UserMemory create indexes the canonical note immediately", async () => {
+  const indexed: UserMemorySearchIndexEntry[] = [];
+  const service = createStubbedService(
+    {
+      rememberUserNote: async (_userId, note) => ({
+        id: 7,
+        note,
+        createdAt: new Date("2026-09-09T00:00:00.000Z"),
+      }),
+      upsertUserMemorySearchIndex: async (entry) => {
+        indexed.push(entry);
+      },
+    },
+    [{ destination: "user_memory", action: "create", reason: "new preference" }],
+  );
+  service.embedText = async () => [0.5, 0.5];
+
+  const result = await service.rememberUserNote({
+    userId: "shared-user",
+    note: "I like mystery novels",
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(indexed, [
+    {
+      noteId: 7,
+      userId: "shared-user",
+      note: "I like mystery novels",
+      embedding: [0.5, 0.5],
+    },
+  ]);
+});
+
 test("replace and delete update the UserMemory search index", async () => {
   const deletedIndexIds: number[] = [];
   const indexed: UserMemorySearchIndexEntry[] = [];
@@ -505,7 +544,42 @@ test("UserMemory index backfill is retryable and idempotent", async () => {
   assert.equal(await service.backfillUserMemorySearchIndex("shared-user"), 0);
 });
 
-test("DailyEvent service keeps user scope and structured date filters", async () => {
+test("unified search supports DailyEvent scope without an embedding index", async () => {
+  const service = createStubbedService({
+    searchDailyEvents: async (input) => [
+      {
+        id: 9,
+        userId: input.userId,
+        eventDate: "2026-09-10",
+        summary: "ミステリー小説を読んだ",
+        tags: ["読書"],
+        createdAt: new Date("2026-09-10T12:00:00.000Z"),
+      },
+    ],
+  });
+
+  const result = await service.search({
+    botId: "ao",
+    threadId: "thread-1",
+    userId: "shared-user",
+    query: "読書",
+    scopes: ["daily_events"],
+    limits: { daily_events: 3 },
+  });
+
+  assert.deepEqual(result.dailyEvents, {
+    status: "found",
+    data: [
+      {
+        eventId: 9,
+        eventDate: "2026-09-10",
+        summary: "ミステリー小説を読んだ",
+      },
+    ],
+  });
+});
+
+test("unified search keeps DailyEvent user scope and structured date filters", async () => {
   const calls: Array<{
     userId: string;
     query: string;
@@ -519,11 +593,15 @@ test("DailyEvent service keeps user scope and structured date filters", async ()
     },
   });
 
-  await service.searchDailyEvents({
+  await service.search({
+    botId: "ao",
+    threadId: "thread-1",
     userId: "shared-user",
     query: "queue tests",
-    from: "2026-09-01",
-    to: "2026-09-30",
+    scopes: ["daily_events"],
+    filters: {
+      dailyEvents: { from: "2026-09-01", to: "2026-09-30" },
+    },
   });
 
   assert.deepEqual(calls, [
@@ -532,6 +610,7 @@ test("DailyEvent service keeps user scope and structured date filters", async ()
       query: "queue tests",
       from: "2026-09-01",
       to: "2026-09-30",
+      limit: 5,
     },
   ]);
 });
@@ -956,8 +1035,6 @@ const createStubbedService = (
       tags: [],
       createdAt: new Date("2026-09-09T00:00:00.000Z"),
     }),
-    searchDailyEvents: async () => [],
-    getDailyEventsByDate: async () => [],
     getDailyEventDateRange: async () => undefined,
     upsertTurnSearchIndex: async () => {},
     fetchTurnSearchCandidates: async () => [],

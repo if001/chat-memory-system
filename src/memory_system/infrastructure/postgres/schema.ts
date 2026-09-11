@@ -9,6 +9,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  vector,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import {
@@ -26,7 +27,7 @@ export const memoryUserNoteSearchIndexTable = appSchema.table(
     noteId: bigint("note_id", { mode: "number" }).primaryKey(),
     userId: text("user_id").notNull(),
     note: text("note").notNull(),
-    embeddingJson: jsonb("embedding_json").$type<number[]>().notNull(),
+    embedding: vector("embedding", { dimensions: 768 }).notNull(),
     indexedAt: timestamp("indexed_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

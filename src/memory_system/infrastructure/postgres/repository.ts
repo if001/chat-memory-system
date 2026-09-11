@@ -2,6 +2,7 @@ import {
   and,
   asc,
   arrayOverlaps,
+  cosineDistance,
   desc,
   eq,
   gte,
@@ -125,11 +126,16 @@ export class MemoryRepository {
           ),
         ),
       })
-      .returning({ turnRecordId: memoryTurnMemoryProcessingTable.turnRecordId });
+      .returning({
+        turnRecordId: memoryTurnMemoryProcessingTable.turnRecordId,
+      });
     return rows.length === 1;
   }
 
-  async completeTurnMemoryRecord(turnRecordId: string, now: Date): Promise<void> {
+  async completeTurnMemoryRecord(
+    turnRecordId: string,
+    now: Date,
+  ): Promise<void> {
     await this.db
       .update(memoryTurnMemoryProcessingTable)
       .set({ processedAt: now, leaseUntil: null, updatedAt: now })
@@ -229,7 +235,7 @@ export class MemoryRepository {
       noteId: entry.noteId,
       userId: entry.userId,
       note: entry.note,
-      embeddingJson: entry.embedding,
+      embedding: entry.embedding,
       indexedAt: new Date(),
     };
     await this.db
@@ -249,8 +255,13 @@ export class MemoryRepository {
 
   async fetchUserMemorySearchCandidates(
     userId: string,
+    queryEmbedding: number[],
     limit: number,
   ): Promise<Array<UserMemorySearchIndexEntry & { createdAt: Date }>> {
+    const distance = cosineDistance(
+      memoryUserNoteSearchIndexTable.embedding,
+      queryEmbedding,
+    );
     const rows = await this.db
       .select({
         index: memoryUserNoteSearchIndexTable,
@@ -265,12 +276,13 @@ export class MemoryRepository {
         ),
       )
       .where(eq(memoryUserNoteSearchIndexTable.userId, userId))
+      .orderBy(distance)
       .limit(limit);
     return rows.map((row) => ({
       noteId: row.index.noteId,
       userId: row.index.userId,
       note: row.index.note,
-      embedding: row.index.embeddingJson,
+      embedding: row.index.embedding,
       createdAt: new Date(row.createdAt),
     }));
   }
@@ -297,7 +309,28 @@ export class MemoryRepository {
     return rows.map(({ note }) => mapUserNote(note));
   }
 
-  async rememberDailyEvent(input: RememberDailyEventInput): Promise<DailyEvent> {
+  async fetchUnindexedUserNotesAcrossUsers(
+    limit: number,
+  ): Promise<Array<{ userId: string; note: UserNote }>> {
+    const rows = await this.db
+      .select({ note: userNotesTable })
+      .from(userNotesTable)
+      .leftJoin(
+        memoryUserNoteSearchIndexTable,
+        eq(userNotesTable.id, memoryUserNoteSearchIndexTable.noteId),
+      )
+      .where(isNull(memoryUserNoteSearchIndexTable.noteId))
+      .orderBy(userNotesTable.createdAt)
+      .limit(limit);
+    return rows.map(({ note }) => ({
+      userId: note.userId,
+      note: mapUserNote(note),
+    }));
+  }
+
+  async rememberDailyEvent(
+    input: RememberDailyEventInput,
+  ): Promise<DailyEvent> {
     const [row] = await this.db
       .insert(dailyEventsTable)
       .values({
@@ -314,7 +347,9 @@ export class MemoryRepository {
     return mapDailyEventRow(row);
   }
 
-  async searchDailyEvents(input: SearchDailyEventsInput): Promise<DailyEvent[]> {
+  async searchDailyEvents(
+    input: SearchDailyEventsInput,
+  ): Promise<DailyEvent[]> {
     const query = input.query.trim();
     const content = sql`concat_ws(' ', ${dailyEventsTable.summary}, ${dailyEventsTable.sourceMessage}, array_to_string(${dailyEventsTable.tags}, ' '))`;
     const conditions = [
@@ -416,7 +451,12 @@ export class MemoryRepository {
           eq(memoryTurnSearchIndexTable.botId, input.botId),
           eq(memoryTurnSearchIndexTable.threadId, input.threadId),
           ...(input.from
-            ? [gte(memoryTurnSearchIndexTable.occurredAt, parseFrom(input.from))]
+            ? [
+                gte(
+                  memoryTurnSearchIndexTable.occurredAt,
+                  parseFrom(input.from),
+                ),
+              ]
             : []),
           ...(input.to
             ? [lte(memoryTurnSearchIndexTable.occurredAt, parseTo(input.to))]
@@ -612,7 +652,10 @@ export class MemoryRepository {
     return rows.map(mapEpisodeCaseRow);
   }
 
-  async fetchRecentEpisodes(botId: string, limit: number): Promise<EpisodeCase[]> {
+  async fetchRecentEpisodes(
+    botId: string,
+    limit: number,
+  ): Promise<EpisodeCase[]> {
     const rows = await this.db
       .select()
       .from(memoryEpisodeCasesTable)
@@ -817,11 +860,13 @@ const mapPolicyCardRow = (
 });
 
 const normalizeNote = (value: string): string =>
-  value.trim().toLocaleLowerCase().replace(/[\s。、,.!！?？]+/gu, " ").trim();
+  value
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[\s。、,.!！?？]+/gu, " ")
+    .trim();
 
-const mapUserNote = (
-  row: typeof userNotesTable.$inferSelect,
-): UserNote => ({
+const mapUserNote = (row: typeof userNotesTable.$inferSelect): UserNote => ({
   id: row.id,
   note: row.note,
   createdAt: new Date(row.createdAt),
@@ -857,11 +902,11 @@ const addDays = (date: Date, delta: number): Date => {
 };
 const formatDateOnly = (date: Date): string => date.toISOString().slice(0, 10);
 const parseFrom = (value: string): Date =>
-  new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00.000Z` : value);
+  new Date(
+    /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00.000Z` : value,
+  );
 
 const parseTo = (value: string): Date =>
   new Date(
-    /^\d{4}-\d{2}-\d{2}$/.test(value)
-      ? `${value}T23:59:59.999Z`
-      : value,
+    /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T23:59:59.999Z` : value,
   );

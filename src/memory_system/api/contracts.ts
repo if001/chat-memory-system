@@ -1,11 +1,8 @@
 import type { PolicyCard, TurnRecord } from "../domain/types";
-import type { QueryPolicyInput } from "./service";
 import type { UserMemoryWriteResult, UserNote } from "../domain/userMemory";
 import type {
   DailyEvent,
-  GetDailyEventsByDateInput,
   RememberDailyEventInput,
-  SearchDailyEventsInput,
 } from "../domain/dailyEvent";
 
 export const memoryScopes = [
@@ -55,6 +52,18 @@ export interface MemorySearchRequest {
   query: string;
   scopes: MemoryScope[];
   limits?: Partial<Record<MemoryScope, number>>;
+  filters?: {
+    conversationHistory?: {
+      from?: string;
+      to?: string;
+      roles?: Array<"system" | "user" | "assistant">;
+      kinds?: Array<"human" | "proactive" | "delegation">;
+    };
+    dailyEvents?: {
+      from?: string;
+      to?: string;
+    };
+  };
 }
 
 export interface ConversationHistorySearchItem {
@@ -120,12 +129,11 @@ export interface MemoryClientFacade {
   recordTurn(input: TurnRecord): Promise<void>;
   inspectCatalog(input: MemoryCatalogRequest): Promise<MemoryCatalog>;
   search(input: MemorySearchRequest): Promise<MemorySearchResult>;
-  queryApplicablePolicyCards(input: QueryPolicyInput): Promise<PolicyCard[]>;
   rememberUserNote(input: {
     userId: string;
     note: string;
   }): Promise<UserMemoryWriteResult>;
-  searchUserNotes(input: {
+  findUserNotesForManagement(input: {
     userId: string;
     query: string;
     limit?: number;
@@ -137,11 +145,6 @@ export interface MemoryClientFacade {
   }): Promise<UserMemoryWriteResult>;
   deleteUserNote(input: { userId: string; noteId: number }): Promise<boolean>;
   rememberDailyEvent(input: RememberDailyEventInput): Promise<DailyEvent>;
-  searchDailyEvents(input: SearchDailyEventsInput): Promise<DailyEvent[]>;
-  getDailyEventsByDate(input: GetDailyEventsByDateInput): Promise<DailyEvent[]>;
-  searchRelatedTurns(
-    input: TurnRecordSearchRequest,
-  ): Promise<TurnRecordSearchItem[]>;
   backfillTurnSearchIndex(botId: string, limit?: number): Promise<number>;
 }
 
@@ -154,7 +157,6 @@ export const validateMemorySearchRequest = (
     ["botId", input.botId],
     ["threadId", input.threadId],
     ["userId", input.userId],
-    ["query", input.query],
   ] as const) {
     if (value.trim().length === 0) {
       throw new TypeError(`${name} must not be empty`);
@@ -170,6 +172,17 @@ export const validateMemorySearchRequest = (
   for (const scope of input.scopes) {
     if (!memoryScopeSet.has(scope)) {
       throw new TypeError(`unknown memory scope: ${String(scope)}`);
+    }
+  }
+
+  if (input.query.trim().length === 0) {
+    const dateFilter = input.filters?.dailyEvents;
+    const isDateOnlyDailyEventSearch =
+      input.scopes.length === 1 &&
+      input.scopes[0] === "daily_events" &&
+      Boolean(dateFilter?.from || dateFilter?.to);
+    if (!isDateOnlyDailyEventSearch) {
+      throw new TypeError("query must not be empty without a DailyEvent date filter");
     }
   }
 

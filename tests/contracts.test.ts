@@ -38,9 +38,8 @@ test("public facade keeps caller scope while hiding storage details", async () =
         data: [{ noteId: 1, note: `${input.userId}: jazz` }],
       },
     }),
-    queryApplicablePolicyCards: async () => [],
     rememberUserNote: async () => ({ ok: true }),
-    searchUserNotes: async () => [],
+    findUserNotesForManagement: async () => [],
     replaceUserNote: async () => ({ ok: true }),
     deleteUserNote: async () => true,
     rememberDailyEvent: async (input) => ({
@@ -51,9 +50,6 @@ test("public facade keeps caller scope while hiding storage details", async () =
       tags: input.tags ?? [],
       createdAt: new Date(),
     }),
-    searchDailyEvents: async () => [],
-    getDailyEventsByDate: async () => [],
-    searchRelatedTurns: async () => [],
     backfillTurnSearchIndex: async () => 0,
   };
 
@@ -70,14 +66,6 @@ test("public facade keeps caller scope while hiding storage details", async () =
     messages: [],
     createdAtIso: "2026-09-09T00:00:00.000Z",
   });
-  assert.deepEqual(
-    await facade.queryApplicablePolicyCards({
-      botId: "ao",
-      threadId: "discord-channel-1",
-      currentContext: "rollout",
-    }),
-    [],
-  );
 
   assert.equal(catalog.conversationHistory.topics[0], "discord-channel-1");
   assert.equal(catalog.userMemory.topics[0], "discord-user-1");
@@ -102,6 +90,13 @@ test("validates bot, thread, and user scoped search requests", () => {
     limits: { conversation_history: 10, user_memory: 5 },
   });
   assert.equal(validateMemorySearchRequest(valid), valid);
+
+  const dateOnly = request({
+    query: "",
+    scopes: ["daily_events"],
+    filters: { dailyEvents: { from: "2026-09-01", to: "2026-09-30" } },
+  });
+  assert.equal(validateMemorySearchRequest(dateOnly), dateOnly);
 
   assert.throws(
     () => validateMemorySearchRequest(request({ botId: " " })),
@@ -136,5 +131,9 @@ test("validates bot, thread, and user scoped search requests", () => {
   assert.throws(
     () => validateMemorySearchRequest(request({ limits: { user_memory: 0 } })),
     /positive integer/,
+  );
+  assert.throws(
+    () => validateMemorySearchRequest(request({ query: "" })),
+    /query must not be empty/,
   );
 });

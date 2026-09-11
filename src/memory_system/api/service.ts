@@ -19,9 +19,7 @@ import {
   TextEmbeddingClient,
 } from "../infrastructure/ollama/embeddingClient";
 import { OllamaClient } from "../infrastructure/ollama/client";
-import {
-  createFileCachedJsonClient,
-} from "../infrastructure/ollama/fileCachedClient";
+import { createFileCachedJsonClient } from "../infrastructure/ollama/fileCachedClient";
 import { JsonGeneratingClient } from "../ports/jsonGeneratingClient";
 import { MemoryRepository } from "../infrastructure/postgres/repository";
 import type {
@@ -40,9 +38,7 @@ import {
 import { rankUserMemory } from "../application/usecases/userMemorySearch";
 import {
   DailyEvent,
-  GetDailyEventsByDateInput,
   RememberDailyEventInput,
-  SearchDailyEventsInput,
 } from "../domain/dailyEvent";
 import type {
   TurnRecordSearchItem,
@@ -122,14 +118,15 @@ export interface MemorySystemService {
     botId: string,
     limit?: number,
   ): Promise<PolicyCard[]>;
-  queryApplicablePolicyCards(input: QueryPolicyInput): Promise<PolicyCard[]>;
+  /** Unified retrieval boundary used by response-agent tools and simple-pomdp. */
   search(input: MemorySearchRequest): Promise<MemorySearchResult>;
   inspectCatalog(input: MemoryCatalogRequest): Promise<MemoryCatalog>;
   rememberUserNote(input: {
     userId: string;
     note: string;
   }): Promise<UserMemoryWriteResult>;
-  searchUserNotes(input: {
+  /** Text lookup used to obtain note IDs for explicit replace/delete operations. */
+  findUserNotesForManagement(input: {
     userId: string;
     query: string;
     limit?: number;
@@ -145,11 +142,6 @@ export interface MemorySystemService {
     limit?: number,
   ): Promise<number>;
   rememberDailyEvent(input: RememberDailyEventInput): Promise<DailyEvent>;
-  searchDailyEvents(input: SearchDailyEventsInput): Promise<DailyEvent[]>;
-  getDailyEventsByDate(input: GetDailyEventsByDateInput): Promise<DailyEvent[]>;
-  searchRelatedTurns(
-    input: TurnRecordSearchRequest,
-  ): Promise<TurnRecordSearchItem[]>;
   backfillTurnSearchIndex(botId: string, limit?: number): Promise<number>;
   processTurnMemoryCandidates(input: {
     userId: string;
@@ -309,9 +301,7 @@ class DefaultMemorySystemService implements MemorySystemService {
     console.log("[buildOrUpdatePolicyCards]: episodes.len=", episodes.length);
     for (const episode of episodes) {
       const existingCards = await this.repository.fetchPolicyCards(botId, 100);
-      const episodeIds = existingCards.flatMap(
-        (card) => card.episodeIds,
-      );
+      const episodeIds = existingCards.flatMap((card) => card.episodeIds);
       const relatedEpisodes = await this.repository.fetchEpisodesByIds(botId, [
         ...new Set(episodeIds),
       ]);
@@ -380,6 +370,7 @@ class DefaultMemorySystemService implements MemorySystemService {
             botId: request.botId,
             threadId: request.threadId,
             query: request.query,
+            ...request.filters?.conversationHistory,
             limit: request.limits?.conversation_history ?? 10,
           });
           result.conversationHistory = turns.length
@@ -422,12 +413,30 @@ class DefaultMemorySystemService implements MemorySystemService {
           : { status: "not_found" };
         continue;
       }
-      if (scope !== "user_memory") {
-        const unavailable = {
-          status: "unavailable",
-          reason: `${scope} search is not implemented`,
-        } as const;
-        result.dailyEvents = unavailable;
+      if (scope === "daily_events") {
+        try {
+          const events = await this.repository.searchDailyEvents({
+            userId: request.userId,
+            query: request.query,
+            limit: request.limits?.daily_events ?? 5,
+            ...request.filters?.dailyEvents,
+          });
+          result.dailyEvents = events.length
+            ? {
+                status: "found",
+                data: events.map((event) => ({
+                  eventId: event.id,
+                  eventDate: event.eventDate,
+                  summary: event.summary,
+                })),
+              }
+            : { status: "not_found" };
+        } catch {
+          result.dailyEvents = {
+            status: "unavailable",
+            reason: "DailyEvent search failed",
+          };
+        }
         continue;
       }
       if (!this.embedText) {
@@ -439,16 +448,18 @@ class DefaultMemorySystemService implements MemorySystemService {
       }
       try {
         const limit = request.limits?.user_memory ?? 5;
-        const [rawQueryEmbedding, candidates] = await Promise.all([
-          this.embedText(request.query),
-          this.repository.fetchUserMemorySearchCandidates(
+        const rawQueryEmbedding = requireEmbedding(
+          await this.embedText(request.query),
+        );
+        const candidates =
+          await this.repository.fetchUserMemorySearchCandidates(
             request.userId,
+            rawQueryEmbedding,
             Math.max(limit * 10, 100),
-          ),
-        ]);
+          );
         const memories = rankUserMemory(
           request.query,
-          requireEmbedding(rawQueryEmbedding),
+          rawQueryEmbedding,
           candidates,
         ).slice(0, limit);
         result.userMemory = memories.length
@@ -600,7 +611,10 @@ class DefaultMemorySystemService implements MemorySystemService {
     leaseMs?: number;
   }): Promise<PendingTurnMemoryBatchResult> {
     const limit = Math.max(1, Math.floor(input.limit));
-    const concurrency = Math.max(1, Math.min(limit, Math.floor(input.concurrency)));
+    const concurrency = Math.max(
+      1,
+      Math.min(limit, Math.floor(input.concurrency)),
+    );
     const leaseMs = Math.max(1_000, input.leaseMs ?? 5 * 60 * 1_000);
     const batchStartedAt = new Date();
     const selected = await this.repository.fetchPendingTurnMemoryRecords(
@@ -649,7 +663,7 @@ class DefaultMemorySystemService implements MemorySystemService {
     return this.executeUserMemoryWrite(input.userId, input.note);
   }
 
-  async searchUserNotes(input: {
+  async findUserNotesForManagement(input: {
     userId: string;
     query: string;
     limit?: number;
@@ -737,7 +751,12 @@ class DefaultMemorySystemService implements MemorySystemService {
     if (decision.action === "create") {
       const note = await this.repository.rememberUserNote(userId, proposedNote);
       await this.indexUserNoteBestEffort(userId, note);
-      return { ok: true, action: decision.action, reason: decision.reason, note };
+      return {
+        ok: true,
+        action: decision.action,
+        reason: decision.reason,
+        note,
+      };
     }
     const target = candidates.find(
       (candidate) => candidate.id === decision.targetNoteId,
@@ -786,14 +805,14 @@ class DefaultMemorySystemService implements MemorySystemService {
   ): Promise<UserNote[]> {
     if (!this.embedText) return [];
     try {
-      const [embedding, candidates] = await Promise.all([
-        this.embedText(query),
-        this.repository.fetchUserMemorySearchCandidates(
+      const embedding = requireEmbedding(await this.embedText(query));
+      const candidates =
+        await this.repository.fetchUserMemorySearchCandidates(
           userId,
+          embedding,
           Math.max(limit * 10, 100),
-        ),
-      ]);
-      return rankUserMemory(query, requireEmbedding(embedding), candidates)
+        );
+      return rankUserMemory(query, embedding, candidates)
         .slice(0, limit)
         .map(({ id, note, createdAt }) => ({ id, note, createdAt }));
     } catch {
@@ -833,18 +852,10 @@ class DefaultMemorySystemService implements MemorySystemService {
     }
   }
 
-  async rememberDailyEvent(input: RememberDailyEventInput): Promise<DailyEvent> {
+  async rememberDailyEvent(
+    input: RememberDailyEventInput,
+  ): Promise<DailyEvent> {
     return this.repository.rememberDailyEvent(input);
-  }
-
-  async searchDailyEvents(input: SearchDailyEventsInput): Promise<DailyEvent[]> {
-    return this.repository.searchDailyEvents(input);
-  }
-
-  async getDailyEventsByDate(
-    input: GetDailyEventsByDateInput,
-  ): Promise<DailyEvent[]> {
-    return this.repository.getDailyEventsByDate(input);
   }
 
   async searchRelatedTurns(
@@ -962,11 +973,13 @@ const CATALOG_SOURCE_LIMIT = 100;
 const CATALOG_TOPIC_LIMIT = 5;
 const CATALOG_TOPIC_MAX_LENGTH = 80;
 
-const catalogEntry = async (load: () => Promise<{
-  topics: string[];
-  updatedAt?: string;
-  dateRange?: { from?: string; to?: string };
-}>): Promise<MemoryCatalogEntry> => {
+const catalogEntry = async (
+  load: () => Promise<{
+    topics: string[];
+    updatedAt?: string;
+    dateRange?: { from?: string; to?: string };
+  }>,
+): Promise<MemoryCatalogEntry> => {
   try {
     const loaded = await load();
     const topics = [

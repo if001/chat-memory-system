@@ -18,6 +18,10 @@ import { z } from "zod";
 const postgresUrl = process.env.MEMORY_SYSTEM_TEST_POSTGRES_URL;
 
 const integrationTest = postgresUrl ? test : test.skip;
+const embedding768 = (first: number): number[] => [
+  first,
+  ...Array.from({ length: 767 }, () => 0),
+];
 integrationTest(
   "UserMemory repository shares user scope, deduplicates, replaces, and deletes notes",
   async () => {
@@ -79,17 +83,23 @@ integrationTest(
         noteId: indexed.id,
         userId,
         note: indexed.note,
-        embedding: [1, 0],
+        embedding: embedding768(1),
       });
       await repository.upsertUserMemorySearchIndex({
         noteId: other.id,
         userId: otherUserId,
         note: other.note,
-        embedding: [1, 0],
+        embedding: embedding768(1),
       });
 
       assert.deepEqual(
-        (await repository.fetchUserMemorySearchCandidates(userId, 10)).map(
+        (
+          await repository.fetchUserMemorySearchCandidates(
+            userId,
+            embedding768(1),
+            10,
+          )
+        ).map(
           (entry) => entry.noteId,
         ),
         [indexed.id],
