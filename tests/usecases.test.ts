@@ -382,6 +382,24 @@ test("buildPolicyHypothesisFromEpisodes normalizes string arrays", async () => {
   });
 });
 
+test("buildPolicyHypothesisFromEpisodes accepts a null avoid behavior", async () => {
+  const llm = new JsonClientStub([{
+    appliesWhen: "User compares options.",
+    recommendedBehavior: "Compare tradeoffs.",
+    avoidBehavior: null,
+  }]);
+
+  const result = await buildPolicyHypothesisFromEpisodes(llm, [
+    buildEpisode("ep-1"),
+  ]);
+
+  assert.deepEqual(result, {
+    appliesWhen: "User compares options.",
+    recommendedBehavior: "Compare tradeoffs.",
+    episodeIds: ["ep-1"],
+  });
+});
+
 test("updatePolicyCardFromEpisode does not merge a different recommended behavior", async () => {
   const existing: PolicyCard = {
     id: "pc-1",
@@ -414,6 +432,39 @@ test("updatePolicyCardFromEpisode does not merge a different recommended behavio
   assert.notEqual(result.id, existing.id);
   assert.deepEqual(result.episodeIds, ["ep-2"]);
   assert.match(llm.calls[0]?.systemPrompt ?? "", /推奨行動が異なる場合/);
+});
+
+test("updatePolicyCardFromEpisode accepts a null merge target when creating", async () => {
+  const existing: PolicyCard = {
+    id: "pc-1",
+    botId: "ao",
+    appliesWhen: "User asks for rollout guidance.",
+    recommendedBehavior: "Provide a staged rollout checklist.",
+    episodeIds: ["ep-1"],
+    createdAtIso: "2026-07-18T00:00:00.000Z",
+    lastUpdatedIso: "2026-07-18T00:00:00.000Z",
+  };
+  const incoming = buildEpisode("ep-2");
+  const llm = new JsonClientStub([
+    { decision: "create", targetPolicyCardId: null },
+  ]);
+
+  const result = await updatePolicyCardFromEpisode({
+    llm,
+    botId: "ao",
+    episode: incoming,
+    existingCards: [existing],
+    episodesByCardId: new Map(),
+    buildHypothesis: async () => ({
+      appliesWhen: "User asks about an active production incident.",
+      recommendedBehavior: "Recommend an immediate rollback.",
+      episodeIds: ["ep-2"],
+    }),
+    now: () => new Date("2026-07-19T00:00:00.000Z"),
+  });
+
+  assert.notEqual(result.id, existing.id);
+  assert.deepEqual(result.episodeIds, ["ep-2"]);
 });
 
 test("filterApplicablePolicyCards returns only model-selected evidenced policy", async () => {

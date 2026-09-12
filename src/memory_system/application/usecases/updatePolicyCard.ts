@@ -1,21 +1,17 @@
 import { buildPolicyCardId } from "../../domain/identifiers";
-import {
-  EpisodeCase,
-  PolicyCard,
-  PolicyHypothesis,
-} from "../../domain/types";
+import { EpisodeCase, PolicyCard, PolicyHypothesis } from "../../domain/types";
 import { JsonGeneratingClient } from "../../ports/jsonGeneratingClient";
 import { episodeForLlm, policyCardsForLlm } from "./llmPayloads";
 import { z } from "zod";
 
 interface UpdateDecision {
   decision?: "merge" | "create";
-  targetPolicyCardId?: string;
+  targetPolicyCardId?: string | null;
 }
 
 const updateDecisionSchema: z.ZodType<UpdateDecision> = z.object({
   decision: z.enum(["merge", "create"]).optional(),
-  targetPolicyCardId: z.string().optional(),
+  targetPolicyCardId: z.string().nullish(),
 });
 
 export const updatePolicyCardFromEpisode = async (input: {
@@ -41,7 +37,9 @@ export const updatePolicyCardFromEpisode = async (input: {
     ...(hypothesis.avoidBehavior
       ? { avoidBehavior: hypothesis.avoidBehavior }
       : {}),
-    episodeIds: [...new Set([...(target?.episodeIds ?? []), ...hypothesis.episodeIds])],
+    episodeIds: [
+      ...new Set([...(target?.episodeIds ?? []), ...hypothesis.episodeIds]),
+    ],
     createdAtIso: target?.createdAtIso ?? nowIso,
     lastUpdatedIso: nowIso,
   };
@@ -61,6 +59,9 @@ const selectMergeTarget = async (input: {
       "あなたは procedural memory の更新判定器です。",
       "新しいEpisodeと同じ適用条件かつ同じ推奨行動のPolicyCardだけをmergeしてください。",
       "推奨行動が異なる場合は、状況が似ていてもcreateを選んでください。",
+      "出力は以下のキーを持つJsonとしてください。",
+      '{"decision: "merge" | "create", "targetPolicyCardId": Option<string>}',
+      "",
       "JSONのみを返してください。",
     ].join(" "),
     JSON.stringify({

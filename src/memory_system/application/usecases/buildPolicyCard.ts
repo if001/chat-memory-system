@@ -6,7 +6,7 @@ import { z } from "zod";
 interface BuildPolicyHypothesisResult {
   appliesWhen: string | string[];
   recommendedBehavior: string | string[];
-  avoidBehavior?: string | string[];
+  avoidBehavior?: string | string[] | null;
 }
 
 const textOrTextArraySchema = z.union([z.string(), z.array(z.string())]);
@@ -14,7 +14,7 @@ const buildPolicyHypothesisResultSchema: z.ZodType<BuildPolicyHypothesisResult> 
   z.object({
     appliesWhen: textOrTextArraySchema,
     recommendedBehavior: textOrTextArraySchema,
-    avoidBehavior: textOrTextArraySchema.optional(),
+    avoidBehavior: textOrTextArraySchema.nullish(),
   });
 
 export const buildPolicyHypothesisFromEpisodes = async (
@@ -55,7 +55,7 @@ export const buildPolicyHypothesisFromEpisodes = async (
       episodes: episodesForLlm(episodes),
     }),
   );
-  console.log("[buildPolicyHypothesisFromEpisodes] :parsed", parsed);
+
   const appliesWhen = requireText(parsed.appliesWhen, "appliesWhen");
   const recommendedBehavior = requireText(
     parsed.recommendedBehavior,
@@ -81,8 +81,8 @@ const requireText = (value: string | string[], fieldName: string): string => {
   return normalized;
 };
 
-const normalizeText = (value: string | string[] | undefined): string =>
-  (Array.isArray(value) ? value : value === undefined ? [] : [value])
+const normalizeText = (value: string | string[] | null | undefined): string =>
+  (Array.isArray(value) ? value : value == null ? [] : [value])
     .map((item) => item.trim())
     .filter(Boolean)
     .join("\n");

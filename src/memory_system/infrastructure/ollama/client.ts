@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { JsonGeneratingClient } from "../../ports/jsonGeneratingClient";
+import { except } from "drizzle-orm/gel-core";
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -49,10 +50,21 @@ export class OllamaClient implements JsonGeneratingClient {
         "detail=",
         detail,
       );
-      throw new Error(`ollama chat request failed: ${response.status}, ${detail}`);
+      throw new Error(
+        `ollama chat request failed: ${response.status}, ${detail}`,
+      );
     }
-    const data = ollamaChatResponseSchema.parse(await response.json());
-    return parseJsonResponse(data.message.content, schema);
+    const raw_response = await response.json();
+    try {
+      const data = ollamaChatResponseSchema.parse(raw_response);
+      return parseJsonResponse(data.message.content, schema);
+    } catch (err) {
+      console.log(
+        "[buildPolicyHypothesisFromEpisodes] :raw_response",
+        raw_response,
+      );
+      throw err;
+    }
   }
 }
 
